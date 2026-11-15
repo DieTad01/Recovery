@@ -1,21 +1,28 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 // sink escribe un archivo recuperado y va observando su contenido.
 type sink struct {
-	f       *os.File
+	w       io.Writer
 	head    []byte
 	n       int64
+	limit   int64 // si > 0, se deja de escribir al llegar a este tamaño
 	nonZero bool
 	err     error
 }
+
+// errLimit indica que se alcanzó el límite del sink (vista previa).
+var errLimit = errors.New("límite alcanzado")
 
 func (k *sink) write(p []byte) {
 	if k.err != nil || len(p) == 0 {
@@ -28,10 +35,16 @@ func (k *sink) write(p []byte) {
 		}
 		k.head = append(k.head, p[:m]...)
 	}
+	if k.limit > 0 && k.n+int64(len(p)) > k.limit {
+		p = p[:k.limit-k.n]
+		k.err = errLimit
+	}
 	if !k.nonZero && !allZero(p) {
 		k.nonZero = true
 	}
-	_, k.err = k.f.Write(p)
+	if _, err := k.w.Write(p); err != nil {
+		k.err = err
+	}
 	k.n += int64(len(p))
 }
 
@@ -50,7 +63,13 @@ func (k *sink) zeros(n int64) {
 			}
 			k.head = append(k.head, zeroBuf[:h]...)
 		}
-		_, k.err = k.f.Write(zeroBuf[:m])
+		if k.limit > 0 && k.n+m > k.limit {
+			m = k.limit - k.n
+			k.err = errLimit
+		}
+		if _, err := k.w.Write(zeroBuf[:m]); err != nil {
+			k.err = err
+		}
 		k.n += m
 		n -= m
 	}
@@ -299,8 +318,8 @@ func (rc *Recoverer) recoverItem(it *Item) {
 		rc.fail(it, err)
 		return
 	}
-	k := &sink{f: f}
-	bad0 := rc.s.Dev.BadBytes
+	k := &sink{w: f}
+	bad0 := atomic.LoadInt64(&rc.s.Dev.BadBytes)
 	damaged := rc.writeData(r, g, k)
 	cerr := f.Close()
 	if k.err == nil {
@@ -340,7 +359,7 @@ func (rc *Recoverer) recoverItem(it *Item) {
 	if damaged {
 		why = append(why, "faltan fragmentos del archivo")
 	}
-	if rc.s.Dev.BadBytes > bad0 {
+	if atomic.LoadInt64(&rc.s.Dev.BadBytes) > bad0 {
 		why = append(why, "sectores ilegibles en el disco")
 	}
 	if !r.has(fEncrypted) && checkSig(ext, k.head) < 0 {
@@ -383,22 +402,43 @@ func (rc *Recoverer) fail(it *Item, err error) {
 	rc.rep.Row("ERROR", originOf(it.Rec), it.Rel, it.Rec.Size, it.Rec.MTime, err.Error())
 }
 
+// CarvedFile es un archivo localizado por su contenido (sin nombre).
+type CarvedFile struct {
+	Off, Size int64
+	Ext       string
+	Name      string
+	MTime     time.Time
+	Doubt     bool
+	Why       string
+	Rel       string // ruta relativa dentro de la carpeta de destino
+}
+
 // RecoverCarved extrae los archivos detectados por firma que no hayan
 // sido ya recuperados con su nombre.
 func (rc *Recoverer) RecoverCarved() {
+	rc.WriteCarved(rc.AnalyzeCarved(nil))
+}
+
+// AnalyzeCarved recorre los candidatos detectados por firma, calcula el
+// tamaño real de cada archivo y decide si es fiable. No escribe nada.
+func (rc *Recoverer) AnalyzeCarved(progressFn func(done, total, found int)) []CarvedFile {
 	s := rc.s
 	rc.covered = mergeIvs(rc.covered)
 	sr := newSrc(s.Dev)
 	var suppress int64
+	var out []CarvedFile
 	start := time.Now()
 	for i, c := range s.Cands {
 		if stopRequested() || rc.Full {
 			break
 		}
-		rc.tick("  Buscando archivos por firma: %s de %s candidatos  ·  %s extraídos  ·  %s",
-			groupDigits(int64(i)), groupDigits(int64(len(s.Cands))), groupDigits(rc.NCarved+rc.NCarvedDoubt),
+		rc.tick("  Analizando archivos por firma: %s de %s candidatos  ·  %s válidos  ·  %s",
+			groupDigits(int64(i)), groupDigits(int64(len(s.Cands))), groupDigits(int64(len(out))),
 			humanDur(time.Since(start)))
 		progress(float64(i) / float64(len(s.Cands)+1))
+		if progressFn != nil && i%64 == 0 {
+			progressFn(i, len(s.Cands), len(out))
+		}
 		if c.Off < suppress || ivContains(rc.covered, c.Off) || s.allocatedAt(c.Off) {
 			continue
 		}
@@ -416,69 +456,95 @@ func (rc *Recoverer) RecoverCarved() {
 		if res.size < rc.MinCarve || (rc.flt.Exts != nil && !rc.flt.Exts[res.ext]) {
 			continue
 		}
+		if rc.flt.Search != nil && !rc.flt.Search.MatchExt(res.ext) {
+			continue
+		}
 		// ¿El tramo pisa datos que pertenecen a otros archivos? Entonces
 		// el archivo estaba fragmentado y lo extraído no es fiable.
-		doubtful := res.partial
-		why := ""
+		cf := CarvedFile{Off: c.Off, Size: res.size, Ext: res.ext, MTime: res.mtime}
 		if res.partial {
-			why = "archivo incompleto (fragmentado o parcialmente sobrescrito)"
+			cf.Doubt = true
+			cf.Why = "archivo incompleto (fragmentado o parcialmente sobrescrito)"
 		}
 		if !res.walked && (ivOverlaps(rc.covered, c.Off, c.Off+res.size) || s.anyAllocated(c.Off, res.size)) {
-			doubtful = true
-			why = "el archivo estaba fragmentado: el tramo incluye datos de otros archivos"
+			cf.Doubt = true
+			cf.Why = "el archivo estaba fragmentado: el tramo incluye datos de otros archivos"
 		}
-		name := fmt.Sprintf("%s_%010d.%s", res.ext, c.Off/512, res.ext)
+		cf.Name = fmt.Sprintf("%s_%010d.%s", res.ext, c.Off/512, res.ext)
 		if res.stamp != "" {
-			name = fmt.Sprintf("%s_%010d.%s", res.stamp, c.Off/512, res.ext)
+			cf.Name = fmt.Sprintf("%s_%010d.%s", res.stamp, c.Off/512, res.ext)
 		}
-		rel := dirCarved + "/" + res.ext + "/" + name
-		if doubtful {
-			rel = dirDoubt + "/" + rel
+		cf.Rel = dirCarved + "/" + res.ext + "/" + cf.Name
+		if cf.Doubt {
+			cf.Rel = dirDoubt + "/" + cf.Rel
 		}
-		final := rc.abs(rel)
-		if st, err := os.Stat(final); err == nil && st.Size() == res.size {
-			rc.NAlready++
-			continue
-		}
-		if err := rc.mkdirFor(final); err != nil {
-			rc.NErr++
-			continue
-		}
-		f, err := os.Create(final)
-		if err != nil {
-			rc.NErr++
-			rc.rep.Row("ERROR", "firma", rel, res.size, 0, err.Error())
-			continue
-		}
-		k := &sink{f: f}
-		rc.copyRange(k, c.Off, res.size)
-		cerr := f.Close()
-		if k.err == nil {
-			k.err = cerr
-		}
-		if k.err != nil {
-			os.Remove(final)
-			if isDiskFull(k.err) {
-				rc.Full = true
-				break
-			}
-			rc.NErr++
-			rc.rep.Row("ERROR", "firma", rel, res.size, 0, k.err.Error())
-			continue
-		}
-		if !res.mtime.IsZero() {
-			os.Chtimes(final, res.mtime, res.mtime)
-		}
-		if doubtful {
-			rc.NCarvedDoubt++
-			rc.rep.Row("DUDOSO", "firma", rel, res.size, 0, why)
-		} else {
-			rc.NCarved++
-			rc.Bytes += res.size
-			rc.rep.Row("RECUPERADO", "firma", rel, res.size, 0, "sin nombre original (recuperado por su contenido)")
-		}
+		out = append(out, cf)
+	}
+	if progressFn != nil {
+		progressFn(len(s.Cands), len(s.Cands), len(out))
 	}
 	statusLine("")
+	return out
+}
+
+// WriteCarved guarda en el destino los archivos localizados por firma.
+func (rc *Recoverer) WriteCarved(list []CarvedFile) {
+	start := time.Now()
+	for i := range list {
+		if stopRequested() || rc.Full {
+			break
+		}
+		rc.tick("  Guardando archivos por firma: %s de %s  ·  %s",
+			groupDigits(int64(i)), groupDigits(int64(len(list))), humanDur(time.Since(start)))
+		rc.WriteCarvedOne(&list[i])
+	}
+	statusLine("")
+}
+
+// WriteCarvedOne guarda un archivo localizado por firma.
+func (rc *Recoverer) WriteCarvedOne(cf *CarvedFile) {
+	final := rc.abs(cf.Rel)
+	if st, err := os.Stat(final); err == nil && st.Size() == cf.Size {
+		rc.NAlready++
+		return
+	}
+	if err := rc.mkdirFor(final); err != nil {
+		rc.NErr++
+		return
+	}
+	f, err := os.Create(final)
+	if err != nil {
+		rc.NErr++
+		rc.rep.Row("ERROR", "firma", cf.Rel, cf.Size, 0, err.Error())
+		return
+	}
+	k := &sink{w: f}
+	rc.copyRange(k, cf.Off, cf.Size)
+	cerr := f.Close()
+	if k.err == nil {
+		k.err = cerr
+	}
+	if k.err != nil {
+		os.Remove(final)
+		if isDiskFull(k.err) {
+			rc.Full = true
+			return
+		}
+		rc.NErr++
+		rc.rep.Row("ERROR", "firma", cf.Rel, cf.Size, 0, k.err.Error())
+		return
+	}
+	if !cf.MTime.IsZero() {
+		os.Chtimes(final, cf.MTime, cf.MTime)
+	}
+	if cf.Doubt {
+		rc.NCarvedDoubt++
+		rc.rep.Row("DUDOSO", "firma", cf.Rel, cf.Size, 0, cf.Why)
+	} else {
+		rc.NCarved++
+		rc.Bytes += cf.Size
+		rc.rep.Row("RECUPERADO", "firma", cf.Rel, cf.Size, 0, "sin nombre original (recuperado por su contenido)")
+	}
 }
 
 // anyAllocated indica si algún cluster de [off, off+n) está ocupado por el

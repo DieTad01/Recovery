@@ -2,596 +2,699 @@
 
 package main
 
-// Interfaz gráfica para Windows, escrita directamente sobre la API Win32
-// (sin dependencias ni cgo, para poder compilarse desde cualquier sistema).
-// Una sola ventana: elegir unidad y destino, opciones y un botón grande.
+// Interfaz gráfica: pantalla de inicio (elegir unidad) y explorador de
+// resultados (árbol de carpetas, lista de archivos con casillas, vista
+// previa y botón «Recuperar»). Escrita directamente sobre Win32.
 
 import (
+	"fmt"
 	"os"
 	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
 
-var (
-	user32   = syscall.NewLazyDLL("user32.dll")
-	gdi32    = syscall.NewLazyDLL("gdi32.dll")
-	comctl32 = syscall.NewLazyDLL("comctl32.dll")
-	ole32    = syscall.NewLazyDLL("ole32.dll")
-
-	procRegisterClassExW   = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW    = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW     = user32.NewProc("DefWindowProcW")
-	procGetMessageW        = user32.NewProc("GetMessageW")
-	procTranslateMessage   = user32.NewProc("TranslateMessage")
-	procDispatchMessageW   = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage    = user32.NewProc("PostQuitMessage")
-	procSendMessageW       = user32.NewProc("SendMessageW")
-	procPostMessageW       = user32.NewProc("PostMessageW")
-	procSetWindowTextW     = user32.NewProc("SetWindowTextW")
-	procGetWindowTextW     = user32.NewProc("GetWindowTextW")
-	procGetWindowTextLenW  = user32.NewProc("GetWindowTextLengthW")
-	procEnableWindow       = user32.NewProc("EnableWindow")
-	procShowWindow         = user32.NewProc("ShowWindow")
-	procUpdateWindow       = user32.NewProc("UpdateWindow")
-	procLoadCursorW        = user32.NewProc("LoadCursorW")
-	procLoadIconW          = user32.NewProc("LoadIconW")
-	procMessageBoxW        = user32.NewProc("MessageBoxW")
-	procGetModuleHandleW   = kernel32.NewProc("GetModuleHandleW")
-	procGetStockObject     = gdi32.NewProc("GetStockObject")
-	procCreateFontW        = gdi32.NewProc("CreateFontW")
-	procInitCommonControls = comctl32.NewProc("InitCommonControlsEx")
-	procSHBrowseForFolderW = shell32.NewProc("SHBrowseForFolderW")
-	procSHGetPathFromIDL   = shell32.NewProc("SHGetPathFromIDListW")
-	procCoInitialize       = ole32.NewProc("CoInitialize")
-)
-
+// Identificadores de controles.
 const (
-	wsChild        = 0x40000000
-	wsVisible      = 0x10000000
-	wsBorder       = 0x00800000
-	wsTabstop      = 0x00010000
-	wsVScroll      = 0x00200000
-	wsGroup        = 0x00020000
-	wsCaption      = 0x00C00000
-	wsSysMenu      = 0x00080000
-	wsMinimizeBox  = 0x00020000
-	wsExClientEdge = 0x00000200
-
-	bsDefPushButton = 0x00000001
-	bsAutoRadio     = 0x00000009
-	bsAutoCheckBox  = 0x00000003
-	bsGroupBox      = 0x00000007
-	esMultiline     = 0x00000004
-	esAutoVScroll   = 0x00000040
-	esReadonly      = 0x00000800
-	cbsDropDownList = 0x00000003
-	cbsHasStrings   = 0x00000200
-	ssLeft          = 0x00000000
-
-	wmDestroy    = 0x0002
-	wmClose      = 0x0010
-	wmCommand    = 0x0111
-	wmSetFont    = 0x0030
-	wmApp        = 0x8000
-	wmSetRedraw  = 0x000B
-	bnClicked    = 0
-	cbnSelChange = 1
-
-	cbAddString   = 0x0143
-	cbGetCurSel   = 0x0147
-	cbSetCurSel   = 0x014E
-	emSetSel      = 0x00B1
-	emReplaceSel  = 0x00C2
-	emScrollCaret = 0x00B7
-	bmGetCheck    = 0x00F0
-	bmSetCheck    = 0x00F1
-	bstChecked    = 1
-
-	pbmSetRange32 = 0x0406
-	pbmSetPos     = 0x0402
-	pbmSetMarquee = 0x040A
-	pbsMarquee    = 0x08
-
-	swShow = 5
-
-	mbOK          = 0
-	mbIconError   = 0x10
-	mbIconWarning = 0x30
-	mbIconInfo    = 0x40
-
-	defaultGUIFont = 17
-
-	wmAppDone = wmApp + 1 // la recuperación terminó (enviado desde el worker)
-)
-
-// Identificadores de los controles.
-const (
-	idCombo = 1001 + iota
-	idDest
-	idBrowse
-	idRadioPers
-	idRadioAll
+	idDrives = 100 + iota
 	idQuick
-	idEmails
-	idStart
-	idCancel
-	idOpen
-	idExit
+	idScan
+	idDisk
+	idProgs
+	idBack
+	idSearch
+	idStop
+	idTree
+	idList
+	idHideSys
+	idRecover
 )
 
-type wndclassex struct {
-	cbSize        uint32
-	style         uint32
-	lpfnWndProc   uintptr
-	cbClsExtra    int32
-	cbWndExtra    int32
-	hInstance     syscall.Handle
-	hIcon         syscall.Handle
-	hCursor       syscall.Handle
-	hbrBackground syscall.Handle
-	lpszMenuName  *uint16
-	lpszClassName *uint16
-	hIconSm       syscall.Handle
-}
+// Mensajes propios (los envían los procesos en segundo plano).
+const (
+	wmAppProgress = wmApp + 1 + iota
+	wmAppResults
+	wmAppDone
+	wmAppPreview
+	wmAppRecProg
+	wmAppRecDone
+	wmAppTable
+)
 
-type tMsg struct {
-	hwnd    syscall.Handle
-	message uint32
-	wParam  uintptr
-	lParam  uintptr
-	time    uint32
-	pt      struct{ x, y int32 }
-}
+const (
+	timerSearch  = 1
+	timerPreview = 2
+)
 
-type browseinfo struct {
-	hwndOwner      syscall.Handle
-	pidlRoot       uintptr
-	pszDisplayName *uint16
-	lpszTitle      *uint16
-	ulFlags        uint32
-	lpfn           uintptr
-	lParam         uintptr
-	iImage         int32
-}
+const (
+	pageHome = iota
+	pageExplorer
+)
 
-type initCommonControlsEx struct {
-	size uint32
-	icc  uint32
-}
+const (
+	busyNone = iota
+	busyScan
+	busyRecover
+)
 
-// Estado global de la ventana.
+// Colores (estilo Windows 11).
 var (
-	gHwnd      syscall.Handle
-	gFont      syscall.Handle
-	gCombo     syscall.Handle
-	gDest      syscall.Handle
-	gRadioPers syscall.Handle
-	gRadioAll  syscall.Handle
-	gQuick     syscall.Handle
-	gEmails    syscall.Handle
-	gStart     syscall.Handle
-	gCancel    syscall.Handle
-	gOpen      syscall.Handle
-	gLog       syscall.Handle
-	gProgress  syscall.Handle
-	gStatus    syscall.Handle
-
-	gSources  []Source
-	gCfg      *Config
-	gRunning  int32
-	gLastErr  error
-	gAutotest bool
+	cBg         = rgb(255, 255, 255)
+	cText       = rgb(28, 28, 28)
+	cMuted      = rgb(96, 96, 96)
+	cAccent     = rgb(0, 95, 184)
+	cAccentDown = rgb(0, 72, 140)
+	cAccentOff  = rgb(170, 196, 222)
+	cLine       = rgb(228, 228, 228)
+	cPanel      = rgb(246, 247, 249)
 )
 
-func sendMsg(h syscall.Handle, msg uint32, w, l uintptr) uintptr {
-	r, _, _ := procSendMessageW.Call(uintptr(h), uintptr(msg), w, l)
-	return r
+// Fuentes.
+const (
+	fBody = iota
+	fBold
+	fTitle
+	fSub
+	fSection
+	fButton
+	nFonts
+)
+
+var fontSpec = [nFonts]struct {
+	px     int
+	weight int
+}{
+	fBody: {12, 400}, fBold: {12, 600}, fTitle: {28, 600}, fSub: {14, 400},
+	fSection: {15, 600}, fButton: {14, 600},
 }
 
-func setText(h syscall.Handle, s string) {
-	procSetWindowTextW.Call(uintptr(h), uintptr(unsafe.Pointer(utf16Ptr(s))))
-}
+type appState struct {
+	hwnd    syscall.Handle
+	dpi     int
+	fonts   [nFonts]syscall.Handle
+	ctlFont map[syscall.Handle]int
+	muted   map[syscall.Handle]bool
+	brBg    syscall.Handle
+	brLine  syscall.Handle
+	brPanel syscall.Handle
+	page    int
+	busy    int
 
-func getText(h syscall.Handle) string {
-	n, _, _ := procGetWindowTextLenW.Call(uintptr(h))
-	if n == 0 {
-		return ""
+	// Inicio
+	homeCtls             []syscall.Handle
+	hTitle, hSub, hSect  syscall.Handle
+	drives               *vlist
+	hQuick, hHint, hScan syscall.Handle
+	hDisk, hProgs, hVer  syscall.Handle
+	sources              []Source
+
+	// Explorador
+	expCtls                    []syscall.Handle
+	hBack, hSrc, hStatus       syscall.Handle
+	hSearch, hProgress, hStop  syscall.Handle
+	hTree, hCrumb, hOverlay    syscall.Handle
+	list                       *vlist
+	hCanvas, hPrevName, hPrevI syscall.Handle
+	hHideSys, hSelInfo, hRecov syscall.Handle
+
+	ss       *Session
+	srcName  string
+	tree     *Tree
+	nodes    []*Node
+	cur      *Node
+	curPath  string
+	rows     []lrow
+	search   bool
+	sortCol  int
+	sortDesc bool
+	selfEdit bool // el programa está cambiando el texto de búsqueda
+
+	progMu  sync.Mutex
+	prog    SessionProgress
+	progPnd int32
+	recProg struct {
+		done, total int
+		bytes       int64
 	}
-	buf := make([]uint16, n+1)
-	procGetWindowTextW.Call(uintptr(h), uintptr(unsafe.Pointer(&buf[0])), n+1)
-	return syscall.UTF16ToString(buf)
+	recRes  RecoverResult
+	recDest string
+
+	prevGen int64
+	prevMu  sync.Mutex
+	prev    previewImage
+	prevFor *Entry
+
+	autotest bool
 }
 
-func enable(h syscall.Handle, on bool) {
-	v := uintptr(0)
-	if on {
-		v = 1
+var app = &appState{ctlFont: map[syscall.Handle]int{}, muted: map[syscall.Handle]bool{}}
+
+var gInst uintptr
+
+// sc pasa de unidades de 96 ppp a píxeles reales.
+func sc(v int) int { return v * app.dpi / 96 }
+
+func makeFonts() {
+	for i, f := range fontSpec {
+		if app.fonts[i] != 0 {
+			pDeleteObject.Call(uintptr(app.fonts[i]))
+		}
+		app.fonts[i] = newFont(sc(f.px), f.weight, "Segoe UI")
 	}
-	procEnableWindow.Call(uintptr(h), v)
 }
 
-func isChecked(h syscall.Handle) bool {
-	return sendMsg(h, bmGetCheck, 0, 0) == bstChecked
-}
-
-func setChecked(h syscall.Handle, on bool) {
-	v := uintptr(0)
-	if on {
-		v = bstChecked
-	}
-	sendMsg(h, bmSetCheck, v, 0)
-}
-
-func messageBox(text, title string, flags uint32) {
-	procMessageBoxW.Call(uintptr(gHwnd),
-		uintptr(unsafe.Pointer(utf16Ptr(text))),
-		uintptr(unsafe.Pointer(utf16Ptr(title))), uintptr(flags))
-}
-
-func newControl(class, text string, style int64, x, y, w, h int, id int) syscall.Handle {
-	hwnd, _, _ := procCreateWindowExW.Call(0,
-		uintptr(unsafe.Pointer(utf16Ptr(class))),
-		uintptr(unsafe.Pointer(utf16Ptr(text))),
-		uintptr(uint32(style)),
-		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
-		uintptr(gHwnd), uintptr(id), 0, 0)
-	hc := syscall.Handle(hwnd)
-	if gFont != 0 {
-		sendMsg(hc, wmSetFont, uintptr(gFont), 1)
-	}
+// ctl crea un control hijo con su fuente.
+func ctl(class, text string, style, ex uintptr, id int, font int) syscall.Handle {
+	h, _, _ := pCreateWindowExW.Call(ex, uintptr(unsafe.Pointer(wstr(class))),
+		uintptr(unsafe.Pointer(wstr(text))), style|wsChild,
+		0, 0, 10, 10, uintptr(app.hwnd), uintptr(id), gInst, 0)
+	hc := syscall.Handle(h)
+	app.ctlFont[hc] = font
+	sendMsg(hc, wmSetFont, uintptr(app.fonts[font]), 0)
 	return hc
 }
 
-// appendLog añade una línea al cuadro de texto del informe.
-func guiAppendLog(s string) {
-	u := syscall.StringToUTF16(s + "\r\n")
-	sendMsg(gLog, emSetSel, ^uintptr(0), ^uintptr(0))
-	sendMsg(gLog, emReplaceSel, 0, uintptr(unsafe.Pointer(&u[0])))
-	sendMsg(gLog, emScrollCaret, 0, 0)
-}
-
-// guiReporter envía la salida del motor a los controles de la ventana.
-type guiReporter struct{}
-
-func (guiReporter) line(s string)   { guiAppendLog(s) }
-func (guiReporter) status(s string) { setText(gStatus, s) }
-func (guiReporter) progress(frac float64) {
-	if frac < 0 {
-		frac = 0
+func applyFonts() {
+	for h, f := range app.ctlFont {
+		sendMsg(h, wmSetFont, uintptr(app.fonts[f]), 1)
 	}
-	if frac > 1 {
-		frac = 1
-	}
-	sendMsg(gProgress, pbmSetPos, uintptr(int(frac*100)), 0)
-}
-
-func wndProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uintptr {
-	switch msg {
-	case wmCommand:
-		id := int(wParam & 0xFFFF)
-		notif := uint32(wParam>>16) & 0xFFFF
-		switch id {
-		case idStart:
-			if notif == bnClicked {
-				onStart()
-			}
-		case idCancel:
-			if notif == bnClicked {
-				atomic.StoreInt32(&stopFlag, 1)
-				setText(gStatus, "Cancelando, espera un momento...")
-			}
-		case idBrowse:
-			if notif == bnClicked {
-				if p := browseFolder(); p != "" {
-					setText(gDest, p)
-				}
-			}
-		case idOpen:
-			if notif == bnClicked {
-				if p := getText(gDest); p != "" {
-					procShellExecuteW.Call(0,
-						uintptr(unsafe.Pointer(utf16Ptr("open"))),
-						uintptr(unsafe.Pointer(utf16Ptr(p))), 0, 0, swShow)
-				}
-			}
-		case idExit:
-			if notif == bnClicked {
-				procPostMessageW.Call(uintptr(gHwnd), wmClose, 0, 0)
-			}
-		}
-		return 0
-	case wmAppDone:
-		onDone()
-		return 0
-	case wmClose:
-		if atomic.LoadInt32(&gRunning) != 0 {
-			messageBox("Hay una recuperación en curso. Pulsa «Cancelar» y espera a que termine antes de cerrar.",
-				"Recovery", mbIconWarning)
-			return 0
-		}
-		procPostQuitMessage.Call(0)
-		return 0
-	case wmDestroy:
-		procPostQuitMessage.Call(0)
-		return 0
-	}
-	r, _, _ := procDefWindowProcW.Call(uintptr(hwnd), uintptr(msg), wParam, lParam)
-	return r
-}
-
-// browseFolder abre el diálogo de selección de carpeta de Windows.
-func browseFolder() string {
-	bi := browseinfo{
-		hwndOwner: gHwnd,
-		lpszTitle: utf16Ptr("Elige la carpeta donde guardar lo recuperado (en OTRA unidad)"),
-		ulFlags:   0x0001 | 0x0010 | 0x0040, // RETURNONLYFSDIRS | EDITBOX | NEWDIALOGSTYLE
-	}
-	pidl, _, _ := procSHBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
-	if pidl == 0 {
-		return ""
-	}
-	buf := make([]uint16, 520)
-	procSHGetPathFromIDL.Call(pidl, uintptr(unsafe.Pointer(&buf[0])))
-	return syscall.UTF16ToString(buf)
-}
-
-// onStart valida los datos y lanza la recuperación en segundo plano.
-func onStart() {
-	if atomic.LoadInt32(&gRunning) != 0 {
-		return
-	}
-	sel := int(sendMsg(gCombo, cbGetCurSel, 0, 0))
-	if sel < 0 || sel >= len(gSources) {
-		messageBox("Elige primero la unidad que quieres recuperar.", "Recovery", mbIconWarning)
-		return
-	}
-	dst := getText(gDest)
-	if dst == "" {
-		messageBox("Elige la carpeta donde guardar lo recuperado.", "Recovery", mbIconWarning)
-		return
-	}
-	src := gSources[sel].Path
-	if fatal, warn := checkDestination(src, dst); fatal != "" {
-		messageBox(fatal, "No se puede guardar ahí", mbIconError)
-		return
-	} else if warn != "" {
-		messageBox(warn, "Aviso", mbIconWarning)
-	}
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		messageBox("No se puede crear la carpeta de destino:\n"+err.Error(), "Error", mbIconError)
-		return
-	}
-
-	gCfg.Source = src
-	gCfg.Out = dst
-	gCfg.Todo = isChecked(gRadioAll)
-	gCfg.Quick = isChecked(gQuick)
-	gCfg.Emails = isChecked(gEmails)
-	gCfg.Yes = true
-	gCfg.Interactive = false
-
-	for _, h := range []syscall.Handle{gCombo, gDest, gBrowseBtn, gRadioPers, gRadioAll, gQuick, gEmails, gStart, gOpen} {
-		enable(h, false)
-	}
-	enable(gCancel, true)
-	setText(gLog, "")
-	sendMsg(gProgress, pbmSetPos, 0, 0)
-	out = guiReporter{}
-	logLines = nil
-	atomic.StoreInt32(&stopFlag, 0)
-	atomic.StoreInt32(&gRunning, 1)
-
-	go func() {
-		gLastErr = run(gCfg)
-		procPostMessageW.Call(uintptr(gHwnd), wmAppDone, 0, 0)
-	}()
-}
-
-var gBrowseBtn syscall.Handle
-
-// onDone se ejecuta al terminar la recuperación.
-func onDone() {
-	atomic.StoreInt32(&gRunning, 0)
-	for _, h := range []syscall.Handle{gCombo, gDest, gBrowseBtn, gRadioPers, gRadioAll, gQuick, gEmails, gStart, gOpen} {
-		enable(h, true)
-	}
-	enable(gCancel, false)
-	sendMsg(gProgress, pbmSetPos, 100, 0)
-	if gLastErr != nil {
-		setText(gStatus, "Error: "+gLastErr.Error())
-		messageBox("No se pudo completar:\n"+gLastErr.Error(), "Recovery", mbIconError)
-	} else {
-		setText(gStatus, "Listo. Pulsa «Abrir carpeta» para ver lo recuperado.")
-		if !gAutotest {
-			messageBox("Recuperación terminada.\n\nRevisa el resumen y pulsa «Abrir carpeta» para ver los archivos.",
-				"Recovery", mbIconInfo)
-		}
-	}
-	if gAutotest && os.Getenv("RECOVERY_GUI_KEEP") == "" {
-		procPostQuitMessage.Call(0)
+	for _, l := range gLists {
+		sendMsg(l.hwnd, wmSetFont, uintptr(app.fonts[fBody]), 1)
 	}
 }
 
-func createFont() syscall.Handle {
-	// Altura -16 (negativa = tamaño de carácter en píxeles). Se usa una
-	// variable para que la conversión a uintptr sea en tiempo de ejecución.
-	height := -16
-	h, _, _ := procCreateFontW.Call(
-		uintptr(height),
-		0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-		uintptr(unsafe.Pointer(utf16Ptr("Segoe UI"))))
-	if h == 0 {
-		s, _, _ := procGetStockObject.Call(defaultGUIFont)
-		return syscall.Handle(s)
-	}
-	return syscall.Handle(h)
-}
+// ---------------------------------------------------------------- arranque
 
-func buildWindow() bool {
-	// Controles comunes (barra de progreso).
-	icc := initCommonControlsEx{size: 8, icc: 0x20 | 0x10}
-	procInitCommonControls.Call(uintptr(unsafe.Pointer(&icc)))
-	procCoInitialize.Call(0)
-
-	hInst, _, _ := procGetModuleHandleW.Call(0)
-	cursor, _, _ := procLoadCursorW.Call(0, 32512) // IDC_ARROW
-	icon, _, _ := procLoadIconW.Call(0, 32512)     // IDI_APPLICATION
-	className := utf16Ptr("RecoveryWnd")
-	wc := wndclassex{
-		cbSize:        uint32(unsafe.Sizeof(wndclassex{})),
-		lpfnWndProc:   syscall.NewCallback(wndProc),
-		hInstance:     syscall.Handle(hInst),
-		hIcon:         syscall.Handle(icon),
-		hCursor:       syscall.Handle(cursor),
-		hbrBackground: syscall.Handle(16), // COLOR_BTNFACE+1
-		lpszClassName: className,
-		hIconSm:       syscall.Handle(icon),
-	}
-	if r, _, _ := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
-		return false
-	}
-	style := wsCaption | wsSysMenu | wsMinimizeBox
-	hwnd, _, _ := procCreateWindowExW.Call(0,
-		uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(utf16Ptr("Recovery "+version+" — Recuperador de archivos"))),
-		uintptr(uint32(style)),
-		80, 40, 726, 650, 0, 0, hInst, 0)
-	if hwnd == 0 {
-		return false
-	}
-	gHwnd = syscall.Handle(hwnd)
-	gFont = createFont()
-
-	newControl("STATIC",
-		"Recupera archivos de un equipo restaurado, formateado o con archivos borrados. Solo LEE\r\n"+
-			"la unidad; nunca escribe en ella. Guarda lo recuperado en OTRO disco (externo o USB).",
-		wsChild|wsVisible|ssLeft, 15, 12, 690, 40, 0)
-
-	newControl("STATIC", "Unidad a recuperar:", wsChild|wsVisible|ssLeft, 15, 64, 155, 20, 0)
-	gCombo = newControl("COMBOBOX", "", wsChild|wsVisible|wsTabstop|wsVScroll|cbsDropDownList|cbsHasStrings,
-		175, 60, 520, 300, idCombo)
-
-	newControl("STATIC", "Guardar en:", wsChild|wsVisible|ssLeft, 15, 97, 155, 20, 0)
-	gDest = newControl("EDIT", "", wsChild|wsVisible|wsTabstop|wsBorder, 175, 95, 410, 24, idDest)
-	gBrowseBtn = newControl("BUTTON", "Examinar...", wsChild|wsVisible|wsTabstop, 595, 93, 100, 27, idBrowse)
-
-	newControl("STATIC", "¿Qué recuperar?", wsChild|wsVisible|ssLeft, 15, 130, 155, 20, 0)
-	gRadioPers = newControl("BUTTON", "Mis archivos personales: documentos, fotos, videos, música...",
-		wsChild|wsVisible|wsTabstop|wsGroup|bsAutoRadio, 175, 128, 520, 22, idRadioPers)
-	gRadioAll = newControl("BUTTON", "Absolutamente todo, incluido Windows y los programas (mucho más)",
-		wsChild|wsVisible|wsTabstop|bsAutoRadio, 175, 152, 520, 22, idRadioAll)
-	setChecked(gRadioPers, true)
-
-	gQuick = newControl("BUTTON", "Búsqueda rápida (solo lo borrado hace poco; es mucho más corta)",
-		wsChild|wsVisible|wsTabstop|bsAutoCheckBox, 175, 182, 520, 22, idQuick)
-	gEmails = newControl("BUTTON", "Buscar también mi correo: Hotmail, Outlook, Gmail...  (tarda más)",
-		wsChild|wsVisible|wsTabstop|bsAutoCheckBox, 175, 206, 520, 22, idEmails)
-
-	gStart = newControl("BUTTON", "Recuperar", wsChild|wsVisible|wsTabstop|bsDefPushButton, 175, 240, 185, 36, idStart)
-	gCancel = newControl("BUTTON", "Cancelar", wsChild|wsVisible|wsTabstop, 375, 240, 130, 36, idCancel)
-	enable(gCancel, false)
-
-	gProgress = newControl("msctls_progress32", "", wsChild|wsVisible, 15, 288, 680, 20, 0)
-	sendMsg(gProgress, pbmSetRange32, 0, 100)
-
-	gLog = newControl("EDIT", "",
-		wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esReadonly|esAutoVScroll,
-		15, 315, 680, 238, 0)
-	// Borde hundido para el cuadro de texto.
-	procSetWindowLongPtrAddExStyle(gLog, wsExClientEdge)
-
-	gStatus = newControl("STATIC", "Elige la unidad y la carpeta de destino, y pulsa «Recuperar».",
-		wsChild|wsVisible|ssLeft, 15, 562, 450, 20, 0)
-	gOpen = newControl("BUTTON", "Abrir carpeta", wsChild|wsVisible|wsTabstop, 475, 558, 115, 28, idOpen)
-	enable(gOpen, false)
-	newControl("BUTTON", "Salir", wsChild|wsVisible|wsTabstop, 598, 558, 97, 28, idExit)
-
-	fillSources()
-	procShowWindow.Call(hwnd, swShow)
-	procUpdateWindow.Call(hwnd)
-	return true
-}
-
-// procSetWindowLongPtrAddExStyle añade un estilo extendido a un control.
-var procSetWindowLongPtrW = user32.NewProc("SetWindowLongPtrW")
-var procGetWindowLongPtrW = user32.NewProc("GetWindowLongPtrW")
-var procSetWindowPos = user32.NewProc("SetWindowPos")
-
-func procSetWindowLongPtrAddExStyle(h syscall.Handle, ex uintptr) {
-	const gwlExStyle = ^uintptr(19) // -20
-	cur, _, _ := procGetWindowLongPtrW.Call(uintptr(h), gwlExStyle)
-	procSetWindowLongPtrW.Call(uintptr(h), gwlExStyle, cur|ex)
-	// Fuerza el redibujado del marco.
-	procSetWindowPos.Call(uintptr(h), 0, 0, 0, 0, 0, 0x0001|0x0002|0x0004|0x0020) // NOMOVE|NOSIZE|NOZORDER|FRAMECHANGED
-}
-
-// fillSources rellena el desplegable con las unidades detectadas.
-func fillSources() {
-	gSources = listSources()
-	for _, s := range gSources {
-		sendMsg(gCombo, cbAddString, 0, uintptr(unsafe.Pointer(utf16Ptr(s.Label))))
-	}
-	// Preselecciona la primera unidad con letra (normalmente C:).
-	pick := 0
-	for i, s := range gSources {
-		if s.Letter != "" {
-			pick = i
-			break
-		}
-	}
-	if len(gSources) > 0 {
-		sendMsg(gCombo, cbSetCurSel, uintptr(pick), 0)
-	}
-}
-
-// runGUIApp crea la ventana y ejecuta el bucle de mensajes.
 func runGUIApp(cfg *Config) int {
-	// La ventana y su bucle de mensajes deben vivir en el MISMO hilo del
-	// sistema operativo; si no, Windows no entrega los mensajes.
-	runtime.LockOSThread()
-	gCfg = cfg
+	runtime.LockOSThread() // ventana y bucle de mensajes en el mismo hilo
+	pSetProcessDPIAware.Call()
+	icc := struct{ size, icc uint32 }{8, 0x1 | 0x2 | 0x20 | 0x4000}
+	pInitCommonControlsEx.Call(uintptr(unsafe.Pointer(&icc)))
+	pCoInitialize.Call(0)
 	keepAwake()
-	if os.Getenv("RECOVERY_GUI_AUTOTEST") != "" {
-		gAutotest = true
+	app.autotest = os.Getenv("RECOVERY_GUI_AUTOTEST") != ""
+
+	h, _, _ := pGetModuleHandleW.Call(0)
+	gInst = h
+	hdc, _, _ := pGetDC.Call(0)
+	d, _, _ := pGetDeviceCaps.Call(hdc, 90) // LOGPIXELSY
+	pReleaseDC.Call(0, hdc)
+	app.dpi = int(d)
+	if app.dpi < 96 {
+		app.dpi = 96
 	}
-	if !buildWindow() {
-		messageBox("No se pudo abrir la ventana del programa.\n\nAbre una consola (cmd) como administrador y ejecuta:\n   recovery.exe -consola",
-			"Recovery", mbIconError)
+	makeFonts()
+	app.brBg = newBrush(cBg)
+	app.brLine = newBrush(cLine)
+	app.brPanel = newBrush(cPanel)
+
+	cursor, _, _ := pLoadCursorW.Call(0, 32512)
+	iconBig, _, _ := pLoadImageW.Call(gInst, uintptr(unsafe.Pointer(wstr("APP"))), 1, 32, 32, 0)
+	iconSm, _, _ := pLoadImageW.Call(gInst, uintptr(unsafe.Pointer(wstr("APP"))), 1, 16, 16, 0)
+	wc := wndclassex{
+		cbSize: uint32(unsafe.Sizeof(wndclassex{})), style: 3,
+		lpfnWndProc: syscall.NewCallback(mainProc), hInstance: syscall.Handle(gInst),
+		hIcon: syscall.Handle(iconBig), hCursor: syscall.Handle(cursor),
+		hbrBackground: app.brBg, lpszClassName: wstr("RecoveryMain"), hIconSm: syscall.Handle(iconSm),
+	}
+	if r, _, _ := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
 		return 1
 	}
-	if gAutotest {
-		autotestDrive()
+	registerCanvasClass(syscall.Handle(cursor))
+	registerTableClass(syscall.Handle(cursor), syscall.Handle(iconBig), syscall.Handle(iconSm))
+
+	// Tamaño inicial: 1100×720 (ajustado a la pantalla).
+	r := rect{0, 0, int32(sc(1100)), int32(sc(720))}
+	pAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&r)), wsOverlappedWin, 0, wsExControlPar)
+	w, ht := int(r.right-r.left), int(r.bottom-r.top)
+	var work rect
+	pSystemParametersInf.Call(0x30, 0, uintptr(unsafe.Pointer(&work)), 0) // SPI_GETWORKAREA
+	if ww := int(work.right - work.left); ww > 0 && w > ww {
+		w = ww
 	}
-	var msg tMsg
+	if wh := int(work.bottom - work.top); wh > 0 && ht > wh {
+		ht = wh
+	}
+	x := int(work.left) + (int(work.right-work.left)-w)/2
+	y := int(work.top) + (int(work.bottom-work.top)-ht)/2
+	hw, _, _ := pCreateWindowExW.Call(wsExControlPar, uintptr(unsafe.Pointer(wstr("RecoveryMain"))),
+		uintptr(unsafe.Pointer(wstr("Recovery"))), wsOverlappedWin|wsClipChildren,
+		uintptr(max(x, 0)), uintptr(max(y, 0)), uintptr(w), uintptr(ht), 0, 0, gInst, 0)
+	if hw == 0 {
+		return 1
+	}
+	app.hwnd = syscall.Handle(hw)
+	if pGetDpiForWindow.Find() == nil {
+		if wd, _, _ := pGetDpiForWindow.Call(hw); int(wd) != app.dpi && wd >= 96 {
+			app.dpi = int(wd)
+			makeFonts()
+		}
+	}
+	buildHome()
+	buildExplorer()
+	fillDrives()
+	showPage(pageHome)
+	pShowWindow.Call(hw, swShow)
+	pUpdateWindow.Call(hw)
+	if !isAdmin() && !app.autotest {
+		msgBox(app.hwnd, "El programa no tiene permisos de administrador, así que no podrá leer las unidades.\n\n"+
+			"Ciérralo, haz clic derecho sobre recovery.exe y elige «Ejecutar como administrador».",
+			"Recovery", mbIconWarning)
+	}
+	if app.autotest {
+		autotestStart()
+	}
+
+	var m tMsg
+	pGetAncestor := user32.NewProc("GetAncestor")
 	for {
-		r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+		r, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
 		if int32(r) <= 0 {
 			break
 		}
-		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
-		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
+		root, _, _ := pGetAncestor.Call(uintptr(m.hwnd), 2) // GA_ROOT
+		if root != 0 {
+			if done, _, _ := pIsDialogMessageW.Call(root, uintptr(unsafe.Pointer(&m))); done != 0 {
+				continue
+			}
+		}
+		pTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		pDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
 	return 0
 }
 
-// autotestDrive rellena la ventana desde variables de entorno y pulsa
-// «Recuperar» automáticamente (solo para las pruebas).
-func autotestDrive() {
-	want := os.Getenv("RECOVERY_GUI_SRC")
-	for i, s := range gSources {
-		if s.Path == want {
-			sendMsg(gCombo, cbSetCurSel, uintptr(i), 0)
+// ---------------------------------------------------------------- pantalla de inicio
+
+func buildHome() {
+	a := app
+	a.hTitle = ctl("STATIC", "Recovery", wsVisible, 0, 0, fTitle)
+	a.hSub = ctl("STATIC", "Recupera archivos borrados, de discos formateados o de equipos restaurados. "+
+		"Solo lee el disco: nunca escribe en él.", wsVisible, 0, 0, fSub)
+	a.muted[a.hSub] = true
+	a.hSect = ctl("STATIC", "¿Dónde estaban los archivos?", wsVisible, 0, 0, fSection)
+	a.drives = newVList(a.hwnd, idDrives, []vcol{
+		{"Unidad", 380, false}, {"Sistema de archivos", 130, false}, {"Capacidad", 110, true},
+		{"Libre", 110, true}, {"Tipo", 260, false},
+	}, false, sysLargeList(), true)
+	a.drives.text = driveText
+	a.drives.image = driveImage
+	a.drives.onActivate = func(int) { startScan() }
+	a.hQuick = ctl("BUTTON", "Análisis rápido: solo lo borrado hace poco (tarda minutos). Desmárcalo si el equipo se formateó o restauró.",
+		wsVisible|wsTabstop|bsAutoCheck, 0, idQuick, fBody)
+	a.hHint = ctl("STATIC", "Consejo: guarda siempre lo recuperado en OTRO disco (externo o USB) y usa el equipo lo menos posible hasta terminar.",
+		wsVisible, 0, 0, fBody)
+	a.muted[a.hHint] = true
+	a.hScan = ctl("BUTTON", "Buscar archivos", wsVisible|wsTabstop|bsOwnerDraw, 0, idScan, fButton)
+	a.hDisk = ctl("BUTTON", "Estado de los discos", wsVisible|wsTabstop, 0, idDisk, fBody)
+	a.hProgs = ctl("BUTTON", "Programas que más ocupan", wsVisible|wsTabstop, 0, idProgs, fBody)
+	a.hVer = ctl("STATIC", "Versión "+version, wsVisible|0x2, 0, 0, fBody) // SS_RIGHT
+	a.muted[a.hVer] = true
+	a.homeCtls = []syscall.Handle{a.hTitle, a.hSub, a.hSect, a.drives.hwnd, a.hQuick, a.hHint, a.hScan, a.hDisk, a.hProgs, a.hVer}
+}
+
+var sysLarge uintptr
+
+func sysLargeList() uintptr {
+	if sysLarge == 0 {
+		var sfi shfileinfo
+		r, _, _ := pSHGetFileInfoW.Call(uintptr(unsafe.Pointer(wstr("C:\\"))), 0,
+			uintptr(unsafe.Pointer(&sfi)), unsafe.Sizeof(sfi), shgfiSysIconIdx|shgfiLargeIcon)
+		sysLarge = r
+	}
+	return sysLarge
+}
+
+func sysSmallList() uintptr {
+	if sysImgSmall == 0 {
+		fileIcon("/")
+	}
+	return sysImgSmall
+}
+
+func fillDrives() {
+	app.sources = listSources()
+	app.drives.setCount(len(app.sources))
+	pick := 0
+	sys := strings.TrimSuffix(strings.ToUpper(os.Getenv("SystemDrive")), ":")
+	for i, s := range app.sources {
+		if s.Letter != "" && (sys == "" || s.Letter == sys) {
+			pick = i
+			break
 		}
 	}
-	setText(gDest, os.Getenv("RECOVERY_GUI_DST"))
-	if os.Getenv("RECOVERY_GUI_ALL") != "" {
-		setChecked(gRadioAll, true)
-		setChecked(gRadioPers, false)
+	app.drives.selectRow(pick)
+}
+
+func sourceName(s Source) string {
+	if s.Disk {
+		n := strings.TrimPrefix(s.Path, `\\.\PhysicalDrive`)
+		name := "Disco físico " + n
+		if s.Model != "" {
+			name += " — " + s.Model
+		}
+		return name
 	}
-	if os.Getenv("RECOVERY_GUI_EMAILS") != "" {
-		setChecked(gEmails, true)
+	label := s.VolLabel
+	if label == "" {
+		label = "Disco local"
+		if s.Removable {
+			label = "Unidad extraíble"
+		}
 	}
-	onStart()
+	return fmt.Sprintf("%s (%s:)", label, s.Letter)
+}
+
+func driveText(row, col int) string {
+	s := app.sources[row]
+	switch col {
+	case 0:
+		return sourceName(s)
+	case 1:
+		if s.Disk {
+			return "—"
+		}
+		if s.FS == "" {
+			return "Sin formato / dañado"
+		}
+		return s.FS
+	case 2:
+		return humanSize(s.Size)
+	case 3:
+		if s.Disk || s.Free <= 0 {
+			return ""
+		}
+		return humanSize(s.Free)
+	case 4:
+		var parts []string
+		if s.Disk {
+			parts = append(parts, "Disco completo")
+			if s.Letters != "" {
+				parts = append(parts, "contiene "+s.Letters)
+			}
+		} else if s.Removable {
+			parts = append(parts, "Extraíble")
+		} else {
+			parts = append(parts, "Unidad")
+		}
+		if s.Bus != "" {
+			parts = append(parts, s.Bus)
+		}
+		if s.SSD {
+			parts = append(parts, "SSD")
+		}
+		return strings.Join(parts, " · ")
+	}
+	return ""
+}
+
+func driveImage(row int) int32 {
+	s := app.sources[row]
+	if s.Letter != "" {
+		return driveIcon(s.Letter + `:\`)
+	}
+	return driveIcon(`C:\`)
+}
+
+// ---------------------------------------------------------------- páginas y diseño
+
+func showPage(p int) {
+	app.page = p
+	for _, h := range app.homeCtls {
+		show(h, p == pageHome)
+	}
+	for _, h := range app.expCtls {
+		show(h, p == pageExplorer)
+	}
+	layout()
+	invalidate(app.hwnd)
+	if p == pageHome {
+		pSetFocus.Call(uintptr(app.drives.hwnd))
+	}
+}
+
+func layout() {
+	a := app
+	W, H := clientSize(a.hwnd)
+	if W == 0 {
+		return
+	}
+	if a.page == pageHome {
+		m := sc(32)
+		moveWin(a.hTitle, m, sc(22), W-2*m, sc(40))
+		moveWin(a.hSub, m, sc(64), W-2*m, sc(22))
+		moveWin(a.hSect, m, sc(104), W-2*m, sc(24))
+		moveWin(a.drives.hwnd, m, sc(132), W-2*m, H-sc(132)-sc(160))
+		moveWin(a.hQuick, m, H-sc(146), W-2*m-sc(250), sc(22))
+		moveWin(a.hHint, m, H-sc(118), W-2*m-sc(250), sc(40))
+		moveWin(a.hScan, W-m-sc(230), H-sc(148), sc(230), sc(50))
+		moveWin(a.hDisk, m, H-sc(58), sc(190), sc(32))
+		moveWin(a.hProgs, m+sc(200), H-sc(58), sc(230), sc(32))
+		moveWin(a.hVer, W-m-sc(200), H-sc(50), sc(200), sc(20))
+		return
+	}
+	busy := a.busy != busyNone
+	moveWin(a.hBack, sc(16), sc(16), sc(96), sc(32))
+	moveWin(a.hSrc, sc(126), sc(10), W-sc(126)-sc(340), sc(24))
+	moveWin(a.hStatus, sc(126), sc(36), W-sc(126)-sc(340), sc(20))
+	moveWin(a.hSearch, W-sc(16)-sc(300), sc(18), sc(300), sc(28))
+	y0 := sc(72)
+	if busy {
+		moveWin(a.hProgress, sc(16), sc(76), W-sc(32)-sc(130), sc(14))
+		moveWin(a.hStop, W-sc(16)-sc(120), sc(68), sc(120), sc(30))
+		y0 = sc(108)
+	}
+	show(a.hProgress, busy && a.page == pageExplorer)
+	show(a.hStop, busy && a.page == pageExplorer)
+	yb := H - sc(64)
+	treeW := sc(270)
+	pw := sc(290)
+	if W < sc(1000) {
+		pw = sc(230)
+	}
+	px := W - sc(16) - pw
+	lx := sc(16) + treeW + sc(10)
+	lw := px - sc(10) - lx
+	moveWin(a.hTree, sc(16), y0, treeW, yb-y0-sc(8))
+	moveWin(a.hCrumb, lx, y0, lw, sc(22))
+	moveWin(a.list.hwnd, lx, y0+sc(26), lw, yb-y0-sc(26)-sc(8))
+	// La columna «Nombre» ocupa lo que queda para que se vean nombre,
+	// tamaño, fecha y estado sin desplazarse.
+	nameW := lw - sc(80+118+120) - sc(28)
+	if nameW < sc(180) {
+		nameW = sc(180)
+	}
+	a.list.cols[0].width = nameW * 96 / a.dpi
+	a.list.rescale()
+	moveWin(a.hOverlay, lx+sc(20), y0+sc(90), lw-sc(40), sc(60))
+	moveWin(a.hCanvas, px, y0, pw, sc(230))
+	moveWin(a.hPrevName, px, y0+sc(240), pw, sc(40))
+	moveWin(a.hPrevI, px, y0+sc(282), pw, yb-y0-sc(282)-sc(8))
+	moveWin(a.hHideSys, sc(16), yb+sc(20), sc(300), sc(24))
+	moveWin(a.hSelInfo, sc(330), yb+sc(22), W-sc(330)-sc(16)-sc(210), sc(22))
+	moveWin(a.hRecov, W-sc(16)-sc(190), yb+sc(10), sc(190), sc(44))
+	invalidate(a.hwnd)
+}
+
+// ---------------------------------------------------------------- ventana principal
+
+func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
+	switch msg {
+	case wmSize:
+		layout()
+		return 0
+	case wmGetMinMax:
+		wrI32(lp, 24, int32(sc(880)))
+		wrI32(lp, 28, int32(sc(580)))
+		return 0
+	case wmPaint:
+		paintMain(hwnd)
+		return 0
+	case wmCtlColorStat:
+		hdc := wp
+		if app.muted[syscall.Handle(lp)] {
+			pSetTextColor.Call(hdc, uintptr(cMuted))
+		} else {
+			pSetTextColor.Call(hdc, uintptr(cText))
+		}
+		pSetBkColor.Call(hdc, uintptr(cBg))
+		return uintptr(app.brBg)
+	case wmDrawItem:
+		drawButton(lp)
+		return 1
+	case wmNotify:
+		if ok, r := handleListNotify(lp); ok {
+			return r
+		}
+		if syscall.Handle(rdPtr(lp, 0)) == app.hTree {
+			treeNotify(lp)
+		}
+		return 0
+	case wmCommand:
+		onCommand(int(wp&0xFFFF), int(wp>>16&0xFFFF))
+		return 0
+	case wmTimer:
+		pKillTimer.Call(uintptr(hwnd), wp)
+		switch wp {
+		case timerSearch:
+			applySearch()
+		case timerPreview:
+			startPreview()
+		}
+		return 0
+	case wmAppProgress:
+		atomic.StoreInt32(&app.progPnd, 0)
+		updateStatus()
+		return 0
+	case wmAppResults:
+		rebuildTree()
+		updateStatus()
+		return 0
+	case wmAppDone:
+		scanDone()
+		return 0
+	case wmAppPreview:
+		if int64(wp) == atomic.LoadInt64(&app.prevGen) {
+			invalidate(app.hCanvas)
+		}
+		return 0
+	case wmAppRecProg:
+		updateStatus()
+		return 0
+	case wmAppRecDone:
+		recoverDone()
+		return 0
+	case wmAppTable:
+		tableUpdate(syscall.Handle(wp))
+		return 0
+	case wmDpiChanged:
+		app.dpi = int(wp & 0xFFFF)
+		makeFonts()
+		applyFonts()
+		for _, l := range gLists {
+			l.rescale()
+		}
+		r := (*rect)(mem(lp))
+		pSetWindowPos.Call(uintptr(hwnd), 0, uintptr(r.left), uintptr(r.top),
+			uintptr(r.right-r.left), uintptr(r.bottom-r.top), 0x4|0x10) // NOZORDER|NOACTIVATE
+		layout()
+		return 0
+	case wmClose:
+		if app.busy != busyNone && !app.autotest {
+			what := "el análisis"
+			if app.busy == busyRecover {
+				what = "la recuperación"
+			}
+			if msgBox(hwnd, "Todavía no ha terminado "+what+". ¿Salir de todos modos?", "Recovery",
+				mbYesNo|mbIconQuest|mbDefButton2) != idYes {
+				return 0
+			}
+			atomic.StoreInt32(&stopFlag, 1)
+		}
+		pDestroyWindow.Call(uintptr(hwnd))
+		return 0
+	case wmDestroy:
+		pPostQuitMessage.Call(0)
+		return 0
+	}
+	r, _, _ := pDefWindowProcW.Call(uintptr(hwnd), uintptr(msg), wp, lp)
+	return r
+}
+
+// paintMain dibuja las líneas que separan las zonas del explorador.
+func paintMain(hwnd syscall.Handle) {
+	var ps paintstruct
+	hdc, _, _ := pBeginPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
+	if app.page == pageExplorer {
+		W, H := clientSize(hwnd)
+		y := sc(64)
+		if app.busy != busyNone {
+			y = sc(104)
+		}
+		for _, yy := range []int{y, H - sc(64)} {
+			r := rect{0, int32(yy), int32(W), int32(yy + 1)}
+			pFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), uintptr(app.brLine))
+		}
+	}
+	pEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
+}
+
+var btnBrush = map[uint32]syscall.Handle{}
+var btnPen = map[uint32]syscall.Handle{}
+
+// drawButton dibuja los botones principales (azules, esquinas redondeadas).
+func drawButton(lp uintptr) {
+	hwnd := syscall.Handle(rdPtr(lp, 24))
+	hdc := rdPtr(lp, 32)
+	state := rdU32(lp, 16)
+	r := rect{rdI32(lp, 40), rdI32(lp, 44), rdI32(lp, 48), rdI32(lp, 52)}
+	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), uintptr(app.brBg))
+	c := cAccent
+	switch {
+	case state&4 != 0: // ODS_DISABLED
+		c = cAccentOff
+	case state&1 != 0: // ODS_SELECTED
+		c = cAccentDown
+	}
+	if btnBrush[c] == 0 {
+		btnBrush[c] = newBrush(c)
+		p, _, _ := pCreatePen.Call(0, 1, uintptr(c))
+		btnPen[c] = syscall.Handle(p)
+	}
+	ob, _, _ := pSelectObject.Call(hdc, uintptr(btnBrush[c]))
+	op, _, _ := pSelectObject.Call(hdc, uintptr(btnPen[c]))
+	rad := uintptr(sc(10))
+	pRoundRect.Call(hdc, uintptr(r.left), uintptr(r.top), uintptr(r.right), uintptr(r.bottom), rad, rad)
+	pSelectObject.Call(hdc, ob)
+	pSelectObject.Call(hdc, op)
+	pSetBkMode.Call(hdc, 1)
+	pSetTextColor.Call(hdc, uintptr(rgb(255, 255, 255)))
+	of, _, _ := pSelectObject.Call(hdc, uintptr(app.fonts[fButton]))
+	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(wstr(getText(hwnd)))), ^uintptr(0),
+		uintptr(unsafe.Pointer(&r)), 0x1|0x4|0x20) // CENTER|VCENTER|SINGLELINE
+	pSelectObject.Call(hdc, of)
+}
+
+func onCommand(id, code int) {
+	switch id {
+	case idScan:
+		startScan()
+	case idDisk:
+		openDiskWindow()
+	case idProgs:
+		openProgramsWindow()
+	case idBack:
+		goHome()
+	case idStop:
+		atomic.StoreInt32(&stopFlag, 1)
+		setText(app.hStatus, "Deteniendo... enseguida verás lo encontrado.")
+		enable(app.hStop, false)
+	case idSearch:
+		if code == enChange && !app.selfEdit {
+			pSetTimer.Call(uintptr(app.hwnd), timerSearch, 300, 0)
+		}
+	case idHideSys:
+		rebuildTree()
+	case idRecover:
+		doRecover("")
+	}
+}
+
+// browseFolder abre el diálogo de Windows para elegir una carpeta.
+func browseFolder(title string) string {
+	bi := browseinfo{hwndOwner: app.hwnd, lpszTitle: wstr(title), ulFlags: 0x1 | 0x10 | 0x40}
+	pidl, _, _ := pSHBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
+	if pidl == 0 {
+		return ""
+	}
+	buf := make([]uint16, 520)
+	pSHGetPathFromIDListW.Call(pidl, uintptr(unsafe.Pointer(&buf[0])))
+	return syscall.UTF16ToString(buf)
+}
+
+func openFolder(p string) {
+	procShellExecuteW.Call(0, uintptr(unsafe.Pointer(wstr("open"))), uintptr(unsafe.Pointer(wstr(p))), 0, 0, swShow)
 }

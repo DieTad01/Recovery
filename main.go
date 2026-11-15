@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "1.0"
+const version = "2.0"
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {
@@ -31,8 +31,8 @@ type Config struct {
 	Yes         bool
 	NewScan     bool
 	Exts        map[string]bool
+	Search      string
 	MinKB       int64
-	Emails      bool
 	Interactive bool
 }
 
@@ -97,10 +97,12 @@ Uso:  recovery -origen <unidad|disco|imagen> -destino <carpeta en OTRA unidad> [
   -ext LISTA       Recuperar solo estas extensiones, p. ej.  -ext jpg,png,mp4,docx
   -min-kb N        Tamaño mínimo de los archivos recuperados por firma (por defecto 4)
   -ignorar-mapa    No saltar las zonas ocupadas por archivos actuales (más lento, más duplicados)
-  -correos         Buscar en el disco direcciones de correo (Hotmail, Outlook, Gmail...)
   -nuevo           No reutilizar un escaneo anterior guardado en el destino
   -si              No pedir confirmaciones
   -consola         Usar la consola de texto en vez de la ventana (Windows)
+  -buscar TEXTO    Recuperar solo lo que coincida: nombre o carpeta (tesis), comodines (*.jpg), varios con comas
+  -estado-disco    Muestra el estado de salud de los discos y termina
+  -programas       Muestra los programas instalados que más ocupan y termina (Windows)
   -listar          Muestra las unidades disponibles y termina
 `, version)
 }
@@ -110,6 +112,7 @@ func main() {
 	modo := "personal"
 	exts := ""
 	listar, pausa, consola := false, false, false
+	estadoDisco, programas := false, false
 	flag.StringVar(&cfg.Source, "origen", "", "")
 	flag.StringVar(&cfg.Out, "destino", "", "")
 	flag.StringVar(&modo, "modo", "personal", "")
@@ -120,12 +123,14 @@ func main() {
 	flag.StringVar(&exts, "ext", "", "")
 	flag.Int64Var(&cfg.MinKB, "min-kb", 4, "")
 	flag.BoolVar(&cfg.IgnoreMap, "ignorar-mapa", false, "")
-	flag.BoolVar(&cfg.Emails, "correos", false, "")
 	flag.BoolVar(&cfg.NewScan, "nuevo", false, "")
 	flag.BoolVar(&cfg.Yes, "si", false, "")
 	flag.BoolVar(&listar, "listar", false, "")
 	flag.BoolVar(&pausa, "pausa", false, "")
 	flag.BoolVar(&consola, "consola", false, "")
+	flag.StringVar(&cfg.Search, "buscar", "", "")
+	flag.BoolVar(&estadoDisco, "estado-disco", false, "")
+	flag.BoolVar(&programas, "programas", false, "")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -137,6 +142,20 @@ func main() {
 		}
 	}
 	// En Windows, sin opciones de línea de comandos, se abre la ventana.
+	if estadoDisco || programas {
+		attachConsole()
+		if estadoDisco {
+			printDiskHealth()
+		}
+		if programas {
+			printPrograms()
+		}
+		if pausa {
+			ask("Pulsa Intro para salir...")
+		}
+		return
+	}
+
 	guiMode := runtime.GOOS == "windows" && !consola && !listar && cfg.Source == ""
 	if guiMode {
 		// La ventana necesita permisos de administrador para leer el disco.
@@ -426,7 +445,10 @@ func run(cfg *Config) error {
 	say("Paso 3 de 4: reconstruyendo carpetas y comprobando el estado de los archivos...")
 	s.attachExtensions()
 	s.detectGeometries(say)
-	flt := Filter{Todo: cfg.Todo, Exts: cfg.Exts}
+	flt := Filter{Todo: cfg.Todo, Exts: cfg.Exts, Search: ParseSearch(cfg.Search)}
+	if flt.Search != nil {
+		say("  Búsqueda: «%s»", flt.Search.Raw)
+	}
 	plan := &Plan{ByCat: map[string]*catStat{}}
 	if !cfg.OnlyCarve {
 		plan = s.BuildPlan(flt)
@@ -491,9 +513,6 @@ func run(cfg *Config) error {
 		rep.Close()
 		say("Listado guardado en %s", filepath.Join(out, "informe.csv"))
 		say("Para recuperar, vuelve a ejecutar sin -solo-listar (se reutilizará el escaneo).")
-		if cfg.Emails {
-			emailStep(s, out)
-		}
 		return nil
 	}
 	defer rep.Close()
@@ -509,9 +528,6 @@ func run(cfg *Config) error {
 	}
 	if len(plan.Items) == 0 && len(s.Cands) == 0 {
 		say("No se encontró ningún archivo que recuperar en esta unidad.")
-		if cfg.Emails {
-			emailStep(s, out)
-		}
 		return nil
 	}
 	if !cfg.Yes && !askYesNo("¿Empezar la recuperación?", true) {
@@ -523,7 +539,9 @@ func run(cfg *Config) error {
 	rc.MinCarve = cfg.MinKB * 1024
 	t1 := time.Now()
 	rc.RecoverMFT(plan)
-	if !cfg.NoCarve && !rc.Full && !stopRequested() {
+	if flt.Search != nil && !flt.Search.CanMatchCarved() {
+		say("  (La búsqueda por nombre no incluye los archivos sin nombre localizados por su contenido.)")
+	} else if !cfg.NoCarve && !rc.Full && !stopRequested() {
 		rc.RecoverCarved()
 	}
 	for _, d := range []string{dirFiles, dirLoose, dirDoubt, dirCarved} {
@@ -557,53 +575,11 @@ func run(cfg *Config) error {
 		say("AVISO: el destino se quedó SIN ESPACIO. Libera espacio o conecta otro disco y vuelve a ejecutar")
 		say("       con la misma carpeta de destino: se continuará sin repetir lo ya recuperado.")
 	}
-	if cfg.Emails && !rc.Full {
-		emailStep(s, out)
-	}
 	if stopRequested() {
 		say("")
 		say("Recuperación interrumpida. Al volver a ejecutar con el mismo destino se continuará.")
 	}
 	return nil
-}
-
-// emailStep busca direcciones de correo en todo el disco y las guarda.
-func emailStep(s *Scan, outDir string) {
-	if stopRequested() {
-		return
-	}
-	say("")
-	say("Buscando direcciones de correo en el disco (lee toda la unidad, puede tardar)...")
-	start := time.Now()
-	lastP := time.Time{}
-	counts := s.ScanEmails(func(pos int64, distinct int) {
-		if time.Since(lastP) < 500*time.Millisecond {
-			return
-		}
-		lastP = time.Now()
-		progress(float64(pos) / float64(s.Dev.Size))
-		statusLine(fmt.Sprintf("  buscando correos: %5.1f%%  ·  %s direcciones distintas  ·  %s",
-			float64(pos)*100/float64(s.Dev.Size), groupDigits(int64(distinct)), humanDur(time.Since(start))))
-	})
-	statusLine("")
-	personal, err := writeEmails(outDir, counts)
-	if err != nil {
-		say("  AVISO: no se pudo escribir correos_encontrados.txt (%v)", err)
-		return
-	}
-	say("  Direcciones distintas encontradas: %s  (lista completa en correos_encontrados.txt)", groupDigits(int64(len(counts))))
-	if len(personal) == 0 {
-		say("  No apareció ninguna dirección de Hotmail, Outlook, Gmail ni similar.")
-		return
-	}
-	say("  Correos personales más probables (por número de apariciones en el disco):")
-	for i, r := range personal {
-		if i >= 12 {
-			say("     ...y %s más (ver el archivo)", groupDigits(int64(len(personal)-12)))
-			break
-		}
-		say("     %-40s  %s apariciones   [%s]", r.Addr, groupDigits(int64(r.N)), r.Provider)
-	}
 }
 
 func writeLog(out string) {
@@ -613,4 +589,47 @@ func writeLog(out string) {
 		sb.WriteString("\r\n")
 	}
 	os.WriteFile(filepath.Join(out, "informe.txt"), []byte(sb.String()), 0o644)
+}
+
+// printDiskHealth muestra en la consola el estado de los discos.
+func printDiskHealth() {
+	ds, vols, err := diskHealth()
+	if err != nil {
+		fmt.Println("AVISO:", err)
+	}
+	fmt.Println("ESTADO DE LOS DISCOS")
+	for _, d := range ds {
+		fmt.Printf("\n  %s  (%s, %s, %s)\n", d.Name, d.Media, d.Bus, humanSize(d.Size))
+		fmt.Printf("     Veredicto: %s", d.Verdict)
+		if len(d.Notes) > 0 {
+			fmt.Printf(" — %s", strings.Join(d.Notes, "; "))
+		}
+		fmt.Printf("\n     %s\n", d.Advice())
+		if d.Temp >= 0 {
+			fmt.Printf("     Temperatura: %d °C\n", d.Temp)
+		}
+		if d.Wear >= 0 {
+			fmt.Printf("     Desgaste (SSD): %d %%\n", d.Wear)
+		}
+		if d.Hours >= 0 {
+			fmt.Printf("     Horas encendido: %s\n", groupDigits(d.Hours))
+		}
+	}
+	if v := VolumeSummary(vols); v != "" {
+		fmt.Println("\n  Espacio:", v)
+	}
+}
+
+// printPrograms muestra en la consola los programas que más ocupan.
+func printPrograms() {
+	ps, err := listPrograms(nil)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println("PROGRAMAS INSTALADOS (de mayor a menor)")
+	for _, r := range ProgramRows(ps) {
+		fmt.Printf("  %12s  %s   %s\n", r[1], r[0], r[2])
+	}
+	fmt.Println("\n  " + ProgramsSummary(ps))
 }

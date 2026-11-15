@@ -9,6 +9,16 @@ type Source struct {
 	Size   int64
 	Letter string
 	Disk   bool
+
+	// Datos para la interfaz gráfica.
+	FS        string // sistema de archivos (NTFS, FAT32...)
+	VolLabel  string // nombre del volumen
+	Free      int64  // espacio libre
+	Removable bool
+	Model     string // modelo del disco físico
+	Bus       string // USB, SATA, NVMe...
+	SSD       bool
+	Letters   string // letras que contiene un disco físico
 }
 
 // Container es una región del dispositivo que puede contener un volumen

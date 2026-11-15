@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"sync/atomic"
 )
 
 // rawReader es el acceso de bajo nivel a la unidad o al archivo de imagen.
@@ -74,7 +75,7 @@ func (d *Device) readAligned(p []byte, off int64) {
 				for i := s; i < e; i++ {
 					p[i] = 0
 				}
-				d.BadBytes += int64(e - s)
+				atomic.AddInt64(&d.BadBytes, int64(e-s))
 			}
 		}
 		pos = end

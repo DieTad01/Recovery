@@ -14,6 +14,7 @@ type Item struct {
 	Total  int64  // bytes almacenados en clusters
 	Overw  int64  // bytes en clusters ya reutilizados por el sistema actual
 	Rooted bool
+	System bool // pertenece a Windows o a un programa instalado
 }
 
 // SkipRow es un archivo localizado que no se puede recuperar.
@@ -22,12 +23,14 @@ type SkipRow struct {
 	Size   int64
 	MTime  int64
 	Reason string
+	System bool
 }
 
 // Filter decide qué archivos se recuperan.
 type Filter struct {
-	Todo bool            // incluir también carpetas y archivos de sistema
-	Exts map[string]bool // nil = todas las extensiones
+	Todo   bool            // incluir también carpetas y archivos de sistema
+	Exts   map[string]bool // nil = todas las extensiones
+	Search *Matcher        // nil = sin búsqueda por nombre
 }
 
 type catStat struct {
@@ -47,6 +50,7 @@ type Plan struct {
 	Partial   int64
 	NSystem   int64 // omitidos por ser archivos de sistema
 	NFiltered int64 // omitidos por el filtro de extensiones
+	NNoMatch  int64 // no coinciden con la búsqueda
 	NOverw    int64
 	NNoData   int64
 	covered   []iv // zonas de archivos intactos que no se recuperan (para no duplicarlos por firma)
@@ -252,7 +256,8 @@ func (s *Scan) BuildPlan(flt Filter) *Plan {
 			}
 			p.covered = appendRuns(p.covered, r, g)
 		}
-		if !flt.Todo && isSystemFile(dir, rooted, r.Name) {
+		system := isSystemFile(dir, rooted, r.Name)
+		if !flt.Todo && system {
 			p.NSystem++
 			addCovered()
 			continue
@@ -260,6 +265,11 @@ func (s *Scan) BuildPlan(flt Filter) *Plan {
 		ext := extOf(r.Name)
 		if flt.Exts != nil && !flt.Exts[ext] {
 			p.NFiltered++
+			addCovered()
+			continue
+		}
+		if flt.Search != nil && !flt.Search.Match(dir, r.Name) {
+			p.NNoMatch++
 			addCovered()
 			continue
 		}
@@ -273,15 +283,15 @@ func (s *Scan) BuildPlan(flt Filter) *Plan {
 			if r.has(fReparse) {
 				reason = "sin datos locales (archivo solo en la nube, p. ej. OneDrive)"
 			}
-			p.Skipped = append(p.Skipped, SkipRow{rel, r.Size, r.MTime, reason})
+			p.Skipped = append(p.Skipped, SkipRow{rel, r.Size, r.MTime, reason, system})
 			continue
 		}
 		if !r.has(fResident) && overw >= total {
 			p.NOverw++
-			p.Skipped = append(p.Skipped, SkipRow{rel, r.Size, r.MTime, "sobrescrito por completo por archivos nuevos"})
+			p.Skipped = append(p.Skipped, SkipRow{rel, r.Size, r.MTime, "sobrescrito por completo por archivos nuevos", system})
 			continue
 		}
-		it := &Item{Rec: r, Phys: phys, Total: total, Overw: overw, Rooted: rooted}
+		it := &Item{Rec: r, Phys: phys, Total: total, Overw: overw, Rooted: rooted, System: system}
 		pends = append(pends, pend{it, dir, name})
 		groupsUsed[r.Group] = true
 	}

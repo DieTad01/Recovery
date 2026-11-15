@@ -366,7 +366,11 @@ func listSources() []Source {
 		for _, dn := range volumeDiskNumbers(letter) {
 			lettersByDisk[dn] = append(lettersByDisk[dn], letter+":")
 		}
-		out = append(out, Source{Path: `\\.\` + letter + ":", Label: desc, Size: size, Letter: letter})
+		var avail, total, free uint64
+		procGetDiskFreeSpaceExW.Call(uintptr(unsafe.Pointer(utf16Ptr(root))),
+			uintptr(unsafe.Pointer(&avail)), uintptr(unsafe.Pointer(&total)), uintptr(unsafe.Pointer(&free)))
+		out = append(out, Source{Path: `\\.\` + letter + ":", Label: desc, Size: size, Letter: letter,
+			FS: syscall.UTF16ToString(fsname[:]), VolLabel: lab, Free: int64(free), Removable: dt == 2})
 	}
 	for n := 0; n < 32; n++ {
 		path := fmt.Sprintf(`\\.\PhysicalDrive%d`, n)
@@ -393,7 +397,9 @@ func listSources() []Source {
 		if ls := lettersByDisk[n]; len(ls) > 0 {
 			desc += "  (contiene " + strings.Join(ls, ", ") + ")"
 		}
-		out = append(out, Source{Path: path, Label: desc, Size: size, Disk: true})
+		out = append(out, Source{Path: path, Label: desc, Size: size, Disk: true,
+			Model: si.model, Bus: busName(si.bus), SSD: si.ssdOK && si.ssd,
+			Letters: strings.Join(lettersByDisk[n], ", ")})
 	}
 	return out
 }
