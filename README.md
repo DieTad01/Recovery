@@ -9,10 +9,16 @@ recuperación comerciales:
   restauración).
 - Además busca **por contenido** (fotos, videos, documentos, música,
   comprimidos…) todo aquello cuyo nombre ya no existe.
+- Puede **buscar direcciones de correo** (Hotmail, Outlook, Gmail…) escritas en
+  el disco, para ayudarte a recuperar una cuenta antigua.
 - Comprueba cada archivo y **separa los que salieron bien de los dañados**.
 - **Solo lee** el disco afectado. Nunca escribe en él.
 
-Es un único archivo (`recovery.exe`), no se instala y no necesita nada más.
+Tiene una **ventana sencilla** (basta con hacer doble clic) y también funciona
+por línea de comandos. Es un único archivo (`recovery.exe`), no se instala y no
+necesita nada más.
+
+![La ventana del programa](docs/ventana.png)
 
 ---
 
@@ -26,24 +32,26 @@ Es un único archivo (`recovery.exe`), no se instala y no necesita nada más.
 3. **No descargues `recovery.exe` en el disco afectado.** Descárgalo en otro
    equipo, cópialo a la memoria USB o al disco externo y ejecútalo desde ahí.
 
-## Cómo usarlo
+## Cómo usarlo (ventana)
 
 1. Copia `recovery.exe` al disco externo o memoria USB y conéctalo al equipo.
 2. Haz doble clic en `recovery.exe`. Windows pedirá permiso de administrador
    (hace falta para leer el disco): responde **Sí**.
    - Si aparece “Windows protegió su PC”, pulsa **Más información → Ejecutar de
      todas formas** (sale porque el programa no está firmado por una empresa).
-3. Responde a las preguntas del asistente:
-   - **Unidad a recuperar:** normalmente `C:`.
-   - **Carpeta de destino:** una carpeta del disco externo, por ejemplo
-     `E:\Recuperado`.
-   - **Qué recuperar:** `1` = archivos personales (recomendado) o `2` = todo.
-   - **Tipo de búsqueda:** `1` = completa. Es la que hay que usar después de
-     restaurar o formatear.
-4. Espera. La búsqueda completa lee todo el disco y **puede tardar horas**
-   (se muestra el avance y el tiempo estimado). El equipo no se suspenderá
-   mientras trabaja.
-5. Al terminar verás un resumen y tendrás todo en la carpeta de destino.
+3. En la ventana:
+   - **Unidad a recuperar:** elige la unidad (normalmente `C:`).
+   - **Guardar en:** pulsa **Examinar…** y elige una carpeta del disco externo,
+     por ejemplo `E:\Recuperado` (tiene que estar en OTRA unidad).
+   - **¿Qué recuperar?:** «Mis archivos personales» (recomendado) o «todo».
+   - Marca **«Buscar también mi correo»** si quieres encontrar tu dirección de
+     Hotmail/Outlook/Gmail antigua.
+4. Pulsa **Recuperar** y espera. La búsqueda completa lee todo el disco y
+   **puede tardar horas** (se ve el avance y el tiempo estimado). El equipo no
+   se suspenderá mientras trabaja. Puedes pulsar **Cancelar** para parar.
+5. Al terminar, pulsa **Abrir carpeta** para ver todo lo recuperado.
+
+![La ventana al terminar](docs/ventana_terminado.png)
 
 Se puede **pausar con Ctrl+C** y continuar otro día: al volver a ejecutarlo con
 la misma carpeta de destino retoma el análisis donde se quedó y no repite los
@@ -60,7 +68,23 @@ espacio (o conecta otro) y vuelve a ejecutarlo.
 | `Dudosos`           | Archivos incompletos o parcialmente sobrescritos: puede que no abran o que abran a medias. |
 | `informe.csv`       | Lista de todo lo tratado con su estado (se abre con Excel). También indica lo que se localizó pero **ya no es recuperable** y por qué. |
 | `informe.txt`       | El resumen que se mostró en pantalla. |
+| `correos_encontrados.txt` | (Si marcaste la búsqueda de correo) Las direcciones encontradas en el disco, ordenadas por número de apariciones y con los proveedores conocidos primero. |
 | `escaneo.idx`       | El análisis guardado, para poder continuar sin repetirlo. Puedes borrarlo al terminar. |
+
+## Encontrar un correo antiguo (Hotmail, Outlook, Gmail…)
+
+Si marcas **«Buscar también mi correo»** (o usas la opción `-correos`), el
+programa rebusca en todo el disco las direcciones de correo escritas en él:
+suelen quedar muchas veces en el perfil anterior de Windows, en Outlook/Correo,
+en la caché del navegador y en el autocompletar, aunque el equipo se haya
+restaurado.
+
+Esto **no entra en la cuenta ni recupera contraseñas**; solo te dice *cuál* era
+tu dirección para que luego puedas recuperarla en la página oficial del
+proveedor (por ejemplo `account.live.com/password/reset` para Hotmail/Outlook).
+El resultado queda en `correos_encontrados.txt`, con las direcciones de
+Hotmail/Outlook/Live/Gmail y similares arriba, ordenadas por cuántas veces
+aparecen (las tuyas suelen ser de las más repetidas).
 
 ## Preguntas frecuentes
 
@@ -99,10 +123,11 @@ antiguo.
 
 ## Uso avanzado (línea de comandos)
 
+Al pasar opciones, el programa no abre la ventana, sino que trabaja por consola.
 Abre una consola **como administrador**:
 
 ```
-recovery -origen C: -destino E:\Recuperado
+recovery.exe -origen C: -destino E:\Recuperado -correos
 ```
 
 | Opción           | Efecto |
@@ -113,13 +138,17 @@ recovery -origen C: -destino E:\Recuperado
 | `-rapido`        | Solo archivos borrados hace poco (lee la tabla de archivos actual; minutos) |
 | `-sin-firmas`    | Solo archivos que conservan nombre y carpeta |
 | `-solo-firmas`   | Solo búsqueda por contenido |
+| `-correos`       | Busca direcciones de correo en el disco (Hotmail, Outlook, Gmail…) |
 | `-solo-listar`   | Analiza y genera `informe.csv` sin recuperar nada todavía |
 | `-ext jpg,mp4`   | Recupera únicamente esas extensiones |
 | `-min-kb N`      | Tamaño mínimo de lo recuperado por firma (por defecto 4 KB) |
 | `-ignorar-mapa`  | Analiza también las zonas ocupadas por archivos actuales |
 | `-nuevo`         | No reutiliza un análisis anterior |
 | `-si`            | No pide confirmaciones |
+| `-consola`       | Fuerza el modo consola en vez de la ventana |
 | `-listar`        | Muestra las unidades y termina |
+
+Sin ninguna opción (doble clic), se abre la ventana.
 
 ## Cómo funciona
 
@@ -157,18 +186,26 @@ proyectos de Filmora `.wfp`, texto, etc.).
 - En unidades FAT32/exFAT (memorias USB, tarjetas SD) solo funciona la búsqueda
   por firma.
 - No descifra BitLocker ni EFS.
+- La búsqueda de correos puede no encontrar nada si el disco es un SSD con TRIM
+  o si la zona donde estaba se reutilizó por completo.
 - Se ha verificado con imágenes NTFS reales (ver *Pruebas*) y ejecutando el
-  `.exe` de Windows bajo Wine, incluido el acceso directo a una unidad. **No se
-  ha podido probar en un Windows real con un disco físico**; si algo falla ahí,
-  el texto del error ayudará a corregirlo.
+  `.exe` de Windows bajo Wine: la ventana, el acceso directo a una unidad y el
+  modo consola, comprobando que recuperan exactamente lo mismo que la versión de
+  Linux. **No se ha podido probar en un Windows real con un disco físico**; si
+  algo falla ahí, el texto del error ayudará a corregirlo.
 
 ## Compilar y probar
 
 Hace falta [Go](https://go.dev/dl/) 1.21 o posterior. No tiene dependencias.
 
+La opción `-H windowsgui` hace que al hacer doble clic se abra la ventana sin
+que aparezca una consola negra detrás.
+
 ```
-go build -trimpath -ldflags "-s -w" -o recovery.exe .        # en Windows
-GOOS=windows GOARCH=amd64 go build -o recovery.exe .          # desde Linux/macOS
+# en Windows:
+go build -trimpath -ldflags "-s -w -H windowsgui" -o recovery.exe .
+# desde Linux/macOS:
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o recovery.exe .
 go test ./...                                                 # pruebas unitarias
 ```
 

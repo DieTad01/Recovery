@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -395,6 +396,38 @@ func listSources() []Source {
 		out = append(out, Source{Path: path, Label: desc, Size: size, Disk: true})
 	}
 	return out
+}
+
+var procAttachConsole = kernel32.NewProc("AttachConsole")
+
+// attachConsole engancha la salida a la consola que lanzó el programa.
+// Como el .exe se compila como aplicación de ventana, sin esto no se
+// vería nada al ejecutarlo desde una consola (cmd o PowerShell).
+func attachConsole() {
+	const attachParent = ^uintptr(0) // ATTACH_PARENT_PROCESS (-1)
+	if r, _, _ := procAttachConsole.Call(attachParent); r == 0 {
+		return // ya hay consola, o no hay ninguna (lanzado desde el explorador)
+	}
+	reopen := func(name string, write bool) *os.File {
+		access := uint32(syscall.GENERIC_READ)
+		if write {
+			access = syscall.GENERIC_WRITE
+		}
+		h, err := syscall.CreateFile(utf16Ptr(name), access,
+			syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, 0, 0)
+		if err != nil {
+			return nil
+		}
+		return os.NewFile(uintptr(h), name)
+	}
+	if f := reopen("CONOUT$", true); f != nil {
+		os.Stdout = f
+		os.Stderr = f
+	}
+	if f := reopen("CONIN$", false); f != nil {
+		os.Stdin = f
+		stdin = bufio.NewReader(os.Stdin)
+	}
 }
 
 // keepAwake evita que Windows suspenda el equipo durante un escaneo largo.

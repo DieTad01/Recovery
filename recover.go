@@ -268,6 +268,7 @@ func (rc *Recoverer) RecoverMFT(p *Plan) {
 		rc.tick("  Recuperando archivos: %s de %s  ·  %s de %s  ·  %s",
 			groupDigits(int64(i)), groupDigits(int64(len(p.Items))),
 			humanSize(doneBytes), humanSize(p.TotalSize), humanDur(time.Since(start)))
+		progress(float64(i) / float64(len(p.Items)+1))
 		rc.recoverItem(it)
 		doneBytes += it.Rec.Size
 	}
@@ -397,6 +398,7 @@ func (rc *Recoverer) RecoverCarved() {
 		rc.tick("  Buscando archivos por firma: %s de %s candidatos  ·  %s extraídos  ·  %s",
 			groupDigits(int64(i)), groupDigits(int64(len(s.Cands))), groupDigits(rc.NCarved+rc.NCarvedDoubt),
 			humanDur(time.Since(start)))
+		progress(float64(i) / float64(len(s.Cands)+1))
 		if c.Off < suppress || ivContains(rc.covered, c.Off) || s.allocatedAt(c.Off) {
 			continue
 		}
