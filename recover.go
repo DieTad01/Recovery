@@ -345,7 +345,7 @@ func (rc *Recoverer) recoverItem(it *Item) {
 	if !r.has(fEncrypted) && checkSig(ext, k.head) < 0 {
 		why = append(why, "el contenido no corresponde a un archivo ."+ext+" (probablemente sobrescrito)")
 	}
-	if !g.Confirmed && !r.has(fResident) && len(why) == 0 && checkSig(ext, k.head) == 0 {
+	if !g.Confirmed && g.Samples > 0 && !r.has(fResident) && len(why) == 0 && checkSig(ext, k.head) == 0 {
 		why = append(why, "no se pudo confirmar la posición del volumen original")
 	}
 	if len(why) > 0 {

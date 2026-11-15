@@ -524,6 +524,7 @@ func run(cfg *Config) error {
 	say("  Dudosos o dañados (carpeta \"%s\"):   %s", dirDoubt, groupDigits(rc.NDoubt+rc.NCarvedDoubt))
 	if rc.NEmpty > 0 {
 		say("  Con contenido en blanco (no guardados):  %s", groupDigits(rc.NEmpty))
+		say("     (se conserva el nombre pero el disco devuelve ceros: es lo que deja un SSD con TRIM)")
 	}
 	if rc.NAlready > 0 {
 		say("  Ya recuperados en una ejecución anterior: %s", groupDigits(rc.NAlready))

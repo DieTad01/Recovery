@@ -79,7 +79,15 @@ func (s *Scan) evalGeom(delta, cs int64, samples []*FileRec) (match, zero, total
 	return
 }
 
-func geomOK(match, total int) bool { return match >= 3 && match*10 >= total }
+// geomOK decide si las coincidencias bastan para dar por buena una
+// geometría. Con pocas muestras basta una coincidencia: que el contenido
+// empiece justo por la firma esperada no ocurre por casualidad.
+func geomOK(match, total int) bool {
+	if total < 30 {
+		return match >= 1 && match*10 >= total
+	}
+	return match >= 3 && match*10 >= total
+}
 
 // detectGeometries deduce la geometría de cada grupo de registros huérfanos.
 func (s *Scan) detectGeometries(logf func(string, ...interface{})) {
