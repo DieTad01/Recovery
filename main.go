@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.1"
+const version = "2.2"
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {
@@ -558,6 +558,7 @@ func run(cfg *Config) error {
 	say("Paso 4 de 4: recuperando...")
 	rc := NewRecoverer(s, out, rep, flt)
 	rc.MinCarve = cfg.MinKB * 1024
+	rc.Validate = true
 	t1 := time.Now()
 	rc.RecoverMFT(plan)
 	if flt.Search != nil && !flt.Search.CanMatchCarved() {
@@ -575,6 +576,12 @@ func run(cfg *Config) error {
 	say("  Recuperados por firma (sin nombre):      %s", groupDigits(rc.NCarved))
 	say("  Total recuperado en buen estado:         %s", humanSize(rc.Bytes))
 	say("  Dudosos o dañados (carpeta \"%s\"):   %s", dirDoubt, groupDigits(rc.NDoubt+rc.NCarvedDoubt))
+	if rc.NVerified+rc.NStructOK+rc.NBadFound > 0 {
+		say("  Comprobación del contenido al guardar:")
+		say("     verificados (sumas de control OK):    %s", groupDigits(rc.NVerified))
+		say("     estructura correcta:                  %s", groupDigits(rc.NStructOK))
+		say("     dañados descubiertos (a \"%s\"):    %s", dirDoubt, groupDigits(rc.NBadFound))
+	}
 	if rc.NEmpty > 0 {
 		say("  Con contenido en blanco (no guardados):  %s", groupDigits(rc.NEmpty))
 		say("     (se conserva el nombre pero el disco devuelve ceros: es lo que deja un SSD con TRIM)")
@@ -687,6 +694,14 @@ func runImage(cfg *Config) error {
 	job, err := NewImageJob(dev, dir, base)
 	if err != nil {
 		return err
+	}
+	if fs := destFS(dir); fs != "" && !strings.EqualFold(fs, "NTFS") && !job.Resumed {
+		say("AVISO: el destino está en %s: la imagen ocupará el tamaño completo del disco (%s), aunque esté casi vacío.",
+			fs, humanSize(dev.Size))
+		if free := freeSpace(dir); free >= 0 && free < dev.Size {
+			return fmt.Errorf("no cabe: hay %s libres y en %s la imagen ocupa %s. Usa un disco en NTFS",
+				humanSize(free), fs, humanSize(dev.Size))
+		}
 	}
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt)

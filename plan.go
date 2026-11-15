@@ -14,8 +14,9 @@ type Item struct {
 	Total  int64  // bytes almacenados en clusters
 	Overw  int64  // bytes en clusters ya reutilizados por el sistema actual
 	Rooted bool
-	System bool // pertenece a Windows o a un programa instalado
-	Zeroed bool // su contenido en el disco está en blanco (SSD con TRIM)
+	System bool   // pertenece a Windows o a un programa instalado
+	Zeroed bool   // su contenido en el disco está en blanco (SSD con TRIM)
+	Bad    string // la comprobación rápida vio que el contenido no corresponde
 }
 
 // SkipRow es un archivo localizado que no se puede recuperar.

@@ -110,10 +110,23 @@ func checkSig(ext string, head []byte) int {
 		}
 		return -1
 	case "ts", "mts", "m2ts":
-		if head[0] == 0x47 || head[4] == 0x47 {
+		if len(head) >= 400 { // varios paquetes seguidos: 0x47 cada 188 o 192 bytes
+			if head[0] == 0x47 && head[188] == 0x47 && head[376] == 0x47 ||
+				head[4] == 0x47 && head[196] == 0x47 && head[388] == 0x47 {
+				return 1
+			}
+		} else if (head[0] == 0x47 || head[4] == 0x47) && !isPrintable(head) {
 			return 1
 		}
+		if ext == "ts" && isPrintable(head) {
+			return 0 // .ts de TypeScript (código fuente)
+		}
 		return -1
+	case "pub": // también son claves públicas SSH (texto)
+		if strings.HasPrefix(string(head), "ssh-") || strings.HasPrefix(string(head), "ecdsa-") ||
+			strings.HasPrefix(string(head), "-----BEGIN") {
+			return 1
+		}
 	}
 	sigs, ok := sigByExt[ext]
 	if !ok {
@@ -175,4 +188,14 @@ func category(ext string) string {
 		return c
 	}
 	return "Otros"
+}
+
+// isPrintable indica si los bytes parecen texto (sin bytes de control raros).
+func isPrintable(b []byte) bool {
+	for _, c := range b {
+		if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
+			return false
+		}
+	}
+	return true
 }

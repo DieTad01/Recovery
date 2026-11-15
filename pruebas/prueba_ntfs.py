@@ -93,10 +93,13 @@ def populate(img, compressed=True):
     # (su lista de tramos no cabe en un registro MFT: usa $ATTRIBUTE_LIST).
     a = open(os.path.join(user, "Videos", "grande_fragmentado_A.mp4"), "wb")
     b = open(os.path.join(user, "Videos", "grande_fragmentado_B.bin"), "wb")
-    a.write(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+    # (estructura MP4 válida: ftyp + mdat con los datos + moov final; así el
+    # comprobador de contenido no lo toma por un video roto)
+    a.write(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + struct.pack(">I", 8 + 700 * 4096) + b"mdat")
     for _ in range(700):
         a.write(rnd.randbytes(4096)); a.flush(); os.fsync(a.fileno())
         b.write(rnd.randbytes(4096)); b.flush(); os.fsync(b.fileno())
+    a.write(b"\x00\x00\x00\x08moov")
     a.close(); b.close()
     # Archivo disperso
     with open(os.path.join(user, "Documents", "disperso.bin"), "wb") as f:
@@ -369,7 +372,8 @@ if "fragmentado" in which:
     for i in range(0, NREL, 2):  # deja miles de huecos pequeños repartidos por el volumen
         os.remove(os.path.join(mnt, "relleno", "r%05d" % i))
     os.makedirs(os.path.join(mnt, "Videos"))
-    data = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + rnd.randbytes(13 << 20)
+    data = (b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + struct.pack(">I", 8 + (13 << 20)) + b"mdat"
+            + rnd.randbytes(13 << 20) + b"\x00\x00\x00\x08moov")
     with open(os.path.join(mnt, "Videos", "muy fragmentado.mp4"), "wb") as f:
         f.write(data)
     umount()

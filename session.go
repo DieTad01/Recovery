@@ -43,6 +43,7 @@ type SessionProgress struct {
 	Records     int // registros NTFS encontrados
 	Cands       int // candidatos por firma
 	Zeroed      int // archivos con el contenido en blanco
+	Bad         int // archivos cuyo contenido ya no corresponde (sobrescrito)
 	Interrupted bool
 }
 
@@ -60,7 +61,9 @@ type Session struct {
 	Final   bool // ya terminó todo el análisis
 	Err     error
 
-	zcache map[zkey]bool // resultado de la comprobación de contenido
+	zcache map[zkey]qres // resultado de la comprobación rápida del contenido
+	dmu    sync.Mutex
+	deep   map[string]vres // resultado de la comprobación a fondo (por entrada)
 }
 
 type zkey struct {
@@ -188,13 +191,13 @@ func (ss *Session) analyze() {
 // si hubo cambios.
 func (ss *Session) verify(p *SessionProgress, notify func(int, SessionProgress)) bool {
 	if ss.zcache == nil {
-		ss.zcache = map[zkey]bool{}
+		ss.zcache = map[zkey]qres{}
 	}
 	ss.mu.RLock()
 	var todo []*Item
 	for _, it := range ss.Plan.Items {
 		r := it.Rec
-		if it.System || r.has(fResident) || r.has(fCompressed) || r.Size == 0 || it.Overw >= it.Total {
+		if r.has(fResident) || r.has(fCompressed) || r.Size == 0 || it.Overw >= it.Total {
 			continue
 		}
 		todo = append(todo, it)
@@ -209,62 +212,37 @@ func (ss *Session) verify(p *SessionProgress, notify func(int, SessionProgress))
 	buf := make([]byte, 4096)
 	last := time.Now()
 	changed := false
-	zero := 0
+	zero, bad := 0, 0
 	for i, it := range todo {
 		if stopRequested() {
 			break
 		}
 		g := ss.Scan.geomFor(it.Rec)
 		k := zkey{it.Rec, g.Delta}
-		z, ok := ss.zcache[k]
+		q, ok := ss.zcache[k]
 		if !ok {
-			z = ss.isZeroed(it.Rec, g, buf)
-			ss.zcache[k] = z
+			q = ss.quickCheck(it.Rec, g, buf, it.System)
+			ss.zcache[k] = q
 		}
-		if it.Zeroed != z {
-			it.Zeroed = z
+		if it.Zeroed != q.zero || it.Bad != q.bad {
+			it.Zeroed, it.Bad = q.zero, q.bad
 			changed = true
 		}
-		if z {
+		if q.zero {
 			zero++
+		}
+		if q.bad != "" {
+			bad++
 		}
 		if time.Since(last) > 250*time.Millisecond {
 			last = time.Now()
 			p.Frac = float64(i) / float64(len(todo))
-			p.Zeroed = zero
+			p.Zeroed, p.Bad = zero, bad
 			notify(evProgress, *p)
 		}
 	}
-	p.Zeroed = zero
+	p.Zeroed, p.Bad = zero, bad
 	return changed
-}
-
-// isZeroed lee 4 KB al principio, a la mitad y al final del archivo: si
-// las tres muestras están en blanco, el contenido ya no existe.
-func (ss *Session) isZeroed(r *FileRec, g Geometry, buf []byte) bool {
-	runs, _ := r.flatten()
-	samples := []int64{0, r.Size / 2, max64(0, r.Size-4096)}
-	read := 0
-	for _, lo := range samples {
-		lo -= lo % g.CS
-		var vcnOff int64
-		for _, ru := range runs {
-			l := ru.Len * g.CS
-			if lo >= vcnOff && lo < vcnOff+l {
-				if ru.LCN >= 0 {
-					off := g.Delta + ru.LCN*g.CS + (lo - vcnOff)
-					n, _ := ss.Dev.ReadAt(buf, off)
-					read++
-					if n > 0 && !allZero(buf[:n]) {
-						return false
-					}
-				}
-				break
-			}
-			vcnOff += l
-		}
-	}
-	return read > 0
 }
 
 // intactRuns devuelve las zonas ocupadas por archivos con nombre intactos,
@@ -307,6 +285,9 @@ func (ss *Session) publish(carved []CarvedFile) {
 			e.State = esPartial
 			e.Why = strconv.FormatInt(it.Overw*100/max64(it.Total, 1), 10) + "% sobrescrito"
 		}
+		if it.Bad != "" {
+			e.State, e.Why = esCorrupt, it.Bad
+		}
 		if it.Zeroed {
 			e.State, e.Why = esZeroed, "contenido en blanco"
 		}
@@ -326,10 +307,15 @@ func (ss *Session) publish(carved []CarvedFile) {
 			MTime: ftToTime(sk.MTime), Group: grpLost, State: esLost, Why: sk.Reason,
 			System: sk.System, Key: "l" + sk.Rel})
 	}
+	ss.dmu.Lock()
 	for _, e := range list {
 		e.Ext = extOf(e.Name)
 		e.Cat = category(e.Ext)
+		if r, ok := ss.deep[ss.deepKey(e)]; ok && e.Checkable() {
+			applyDeep(e, r)
+		}
 	}
+	ss.dmu.Unlock()
 	ss.Entries = list
 }
 
@@ -365,11 +351,16 @@ type RecoverResult struct {
 	Good, Doubt, Empty, Errors, Already int64
 	Bytes                               int64
 	Full, Stopped                       bool
+	Verified, StructOK, BadFound        int64 // comprobación del contenido al guardar
 }
 
 // Recover guarda las entradas elegidas en dest, respetando sus carpetas.
 func (ss *Session) Recover(sel []*Entry, dest string, prog func(done, total int, bytes int64)) RecoverResult {
 	rc := NewRecoverer(ss.Scan, dest, nil, Filter{Todo: true})
+	rc.Validate = true
+	if ss.deep == nil {
+		ss.deep = map[string]vres{}
+	}
 	var res RecoverResult
 	var done int64
 	for i, e := range sel {
@@ -380,6 +371,12 @@ func (ss *Session) Recover(sel []*Entry, dest string, prog func(done, total int,
 		if prog != nil {
 			prog(i, len(sel), done)
 		}
+		key := ss.deepKey(e)
+		ss.dmu.Lock()
+		if v, ok := ss.deep[key]; ok {
+			rc.Known = &v
+		}
+		ss.dmu.Unlock()
 		ss.mu.RLock()
 		switch {
 		case e.Item != nil:
@@ -388,6 +385,12 @@ func (ss *Session) Recover(sel []*Entry, dest string, prog func(done, total int,
 			rc.WriteCarvedOne(e.Carve)
 		}
 		ss.mu.RUnlock()
+		rc.Known = nil
+		if rc.Last.v != vNone {
+			ss.dmu.Lock()
+			ss.deep[key] = rc.Last
+			ss.dmu.Unlock()
+		}
 		done += e.Size
 	}
 	for _, d := range []string{dirFiles, dirLoose, dirDoubt, dirCarved} {
@@ -397,6 +400,8 @@ func (ss *Session) Recover(sel []*Entry, dest string, prog func(done, total int,
 	res.Doubt = rc.NDoubt + rc.NCarvedDoubt
 	res.Empty, res.Errors, res.Already = rc.NEmpty, rc.NErr, rc.NAlready
 	res.Bytes, res.Full = rc.Bytes, rc.Full
+	res.Verified, res.StructOK, res.BadFound = rc.NVerified, rc.NStructOK, rc.NBadFound
+	ss.publish(nil) // los estados reflejan ahora lo comprobado al guardar
 	if prog != nil {
 		prog(len(sel), len(sel), done)
 	}
@@ -415,10 +420,12 @@ const (
 
 // Estados de una entrada.
 const (
-	esIntact      = iota // intacto
-	esPartial            // parcialmente sobrescrito
+	esIntact      = iota // sin indicios de daño (no comprobado a fondo)
+	esVerified           // comprobado a fondo: su estructura/sumas de control son correctas
 	esCarved             // sin nombre, completo
+	esPartial            // parcialmente sobrescrito
 	esCarvedDoubt        // sin nombre, quizá incompleto
+	esCorrupt            // su contenido no es válido (sobrescrito o dañado)
 	esZeroed             // el contenido está en blanco (lo vació el disco)
 	esLost               // ya no se puede recuperar
 )
@@ -439,6 +446,7 @@ type Entry struct {
 	Carve   *CarvedFile
 	Key     string
 	Checked bool
+	Deep    int // resultado de la comprobación a fondo (vNone si no se hizo)
 	nodes   []*Node
 }
 
@@ -447,10 +455,20 @@ func (e *Entry) Checkable() bool { return e.State != esLost && e.State != esZero
 // StateText describe el estado para la columna «Estado».
 func (e *Entry) StateText() string {
 	switch e.State {
+	case esVerified:
+		return "Verificado"
 	case esIntact, esCarved:
+		switch e.Deep {
+		case vStruct:
+			return "Estructura OK"
+		case vUnknown:
+			return "No verificable"
+		}
 		return "Bueno"
 	case esPartial:
 		return "Dañado en parte"
+	case esCorrupt:
+		return "Dañado"
 	case esCarvedDoubt:
 		return "Puede estar incompleto"
 	case esZeroed:
@@ -462,10 +480,20 @@ func (e *Entry) StateText() string {
 // StateDetail explica el estado con más detalle (panel de vista previa).
 func (e *Entry) StateDetail() string {
 	switch e.State {
+	case esVerified:
+		return "Verificado: " + e.Why + ". Se recuperará exactamente como estaba."
 	case esIntact:
-		return "Bueno: se puede recuperar entero"
+		if e.Why != "" {
+			return "Bueno: " + e.Why + " (este tipo de archivo no lleva sumas de control: no se puede garantizar al 100 %)"
+		}
+		return "Bueno: no hay señales de daño, pero aún no se comprobó a fondo (botón «Verificar a fondo»)"
 	case esCarved:
-		return "Bueno (sin nombre original: encontrado por su contenido)"
+		if e.Why != "" {
+			return "Bueno (sin nombre original): " + e.Why
+		}
+		return "Bueno (sin nombre original: encontrado por su contenido); aún no se comprobó a fondo"
+	case esCorrupt:
+		return "Dañado: " + e.Why + ". Se puede recuperar, pero lo más probable es que no abra o le falten partes."
 	case esPartial:
 		return "Dañado en parte: " + e.Why + " por archivos nuevos"
 	case esCarvedDoubt:

@@ -135,3 +135,6 @@ func destFSNote(string) string { return "" }
 func setSparse(*os.File) {}
 
 func destIsFAT32(string) bool { return false }
+
+// destFS: en Linux no hace falta (los archivos ya son dispersos).
+func destFS(string) string { return "" }

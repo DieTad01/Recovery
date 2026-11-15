@@ -48,8 +48,10 @@ sola vez** y recuperar desde la imagen todas las veces que haga falta.
    Así Windows no monta ni escribe en los discos nuevos. Al terminar, vuelve a
    poner el valor anotado.
 3. En Recovery elige el **«Disco físico …»** y pulsa **«Crear imagen del disco…»**.
-   Elige una carpeta en otro disco (NTFS o exFAT; FAT32 no sirve) con espacio
-   para el tamaño del disco; las zonas vacías no ocupan sitio.
+   Elige una carpeta en otro disco **formateado en NTFS**: en NTFS las zonas
+   vacías del disco no ocupan sitio. En exFAT también funciona, pero la imagen
+   ocupa **siempre el tamaño completo** del disco de origen (y tarda más); el
+   programa lo avisa y comprueba que quepa. FAT32 no sirve.
 4. Al terminar, pulsa **«Analizar la imagen»** (o más tarde **«Abrir imagen…»**)
    y recupera desde ahí. El disco del cliente ya puedes desconectarlo.
 
@@ -102,10 +104,21 @@ sola vez** y recuperar desde la imagen todas las veces que haga falta.
 La casilla **«Ocultar archivos de Windows y de programas»** (marcada por
 defecto) deja solo los archivos personales; desmárcala para verlo todo.
 
-El botón **«Ver resumen…»** muestra, con porcentajes, cuántos archivos están en
-buen estado, dañados, en blanco o perdidos (y sus GB). Es la mejor forma de
-saber de antemano qué parte se puede salvar y de enseñárselo al cliente. Al
+El botón **«Ver resumen…»** muestra, con porcentajes, cuántos archivos están
+verificados, sin comprobar, dañados, en blanco o perdidos (y sus GB). Al
 recuperar, ese mismo resumen se guarda como `resumen.txt`.
+
+El botón **«Verificar a fondo…»** lee entero cada archivo (los marcados, o todos
+si no hay nada marcado) y comprueba su contenido: sumas de control de ZIP/Office
+(docx, xlsx, pptx), PNG, PDF y OGG; decodificación completa de JPG y GIF;
+registros internos de Excel, PowerPoint y Word 97-2003; páginas de SQLite;
+fotogramas de MP4/MOV (H.264/H.265) y MKV; paquetes de WMV/WMA, TS/MTS y MP3;
+y que los textos sigan siendo texto. **Antes de prometerle un porcentaje al
+cliente, verifica a fondo**: es lo único que distingue «parece bueno» de
+«está bien». Al recuperar se hace la misma comprobación sobre lo guardado y lo
+dañado va a la carpeta `Dudosos`.
+
+![Estados tras «Verificar a fondo»](docs/verificar.png)
 
 ![Resumen con el porcentaje de éxito](docs/resumen.png)
 
@@ -126,7 +139,18 @@ No distingue mayúsculas ni acentos («mama» encuentra «Mamá»).
 
 ### Estado de cada archivo
 
-- **Bueno**: se puede recuperar entero.
+- **Verificado**: se leyó entero y sus sumas de control (o su decodificación)
+  son correctas. Saldrá exactamente como estaba.
+- **Estructura OK**: se recorrió entero y todo encaja; su tipo no lleva sumas
+  de control (txt, csv, mp3, wav, avi, doc…), así que es muy probable pero no
+  100 % seguro.
+- **Bueno**: ni el mapa del disco ni las muestras leídas muestran daño, pero
+  **aún no se comprobó a fondo**. Tras una reinstalación de Windows, archivos
+  temporales pueden haberlo pisado sin dejar rastro: pulsa «Verificar a fondo».
+- **No verificable**: ya se intentó comprobar, pero es de un tipo sin estructura
+  que mirar (.bin, .dat, .dll, formatos propios de programas). Su estado real no
+  se puede saber hasta abrirlo.
+- **Dañado**: su contenido no corresponde (sobrescrito por otros datos).
 - **Dañado en parte**: parte de su contenido fue reutilizado por archivos nuevos;
   puede abrir a medias.
 - **Puede estar incompleto**: encontrado por su contenido pero estaba
@@ -243,6 +267,41 @@ OPUS · PDF, DOCX, XLSX, PPTX, DOC, XLS, PPT, ODT, RTF, EPUB · ZIP, RAR, 7Z ·
 SQLite, PST. Los archivos que conservan su registro NTFS se recuperan sean del
 tipo que sean.
 
+## Exactitud medida
+
+`pruebas/prueba_exactitud.py` compara, archivo por archivo, el estado que
+muestra el programa con el archivo original real (SHA-1). Resultados en seis
+escenarios (borrado, formateo, reinstalaciones, TRIM, disco con particiones):
+
+| Estado | Acierto (el archivo sale idéntico al original) |
+|--------|-----------------------------------------------|
+| Verificado / Estructura OK | **100 %** en los 6 escenarios (0 errores en 497 archivos) |
+| Bueno (solo análisis rápido) | 99–100 % en 5 escenarios; **61 %** en el peor caso (reinstalación que pisa sin dejar rastro) |
+| Dañado / En blanco | 0 falsas alarmas |
+
+En el peor caso, antes de esta versión «Bueno» acertaba solo el **4.5 %** y el
+resumen decía «100 % en buen estado» cuando en realidad era 0 %. Ahora el
+resumen dice «comprobado correcto: 0 %», que es la realidad; lo que queda sin
+comprobar son archivos .bin/.dat sin estructura.
+
+Con daños hechos a propósito sobre archivos reales sanos (un bloque de 4 KB
+ajeno a mitad del archivo / 64 KB ajenos / el último 30 % en blanco), la
+verificación a fondo los detecta así (entre paréntesis, cuántos archivos se
+probaron de ese tipo):
+
+- **100 % de los tres daños**: docx (8), xlsx (10), pptx (5), xls (17), zip (12),
+  jpg (9), png (21), gif (5), sqlite (11), txt/xml/csv (81), ts (40), mp3 (2);
+  mkv, webm, mov, avi, wmv, wma, opus y mts también, pero con solo 1 archivo de
+  cada uno (muestra pequeña).
+- **pdf** (13): 77 % / 92 % / 100 %. **doc** (10): 80 % / 100 % / 100 %.
+  **mp4** (4): los de video H.264/H.265 sí; los que no llevan ese video, no.
+- **Solo si el daño rompe la estructura**: ppt (12 %), m4a, wav, tif, psd,
+  webp, rar y 7z. Sus datos no llevan sumas de control (o haría falta
+  descomprimirlos), así que un trozo pisado en medio puede pasar desapercibido.
+
+Pasado por más de 100 000 archivos reales sanos, no marcó ninguno como dañado
+(0 falsas alarmas).
+
 ## Limitaciones
 
 - No puede recuperar lo físicamente sobrescrito ni lo vaciado por TRIM.
@@ -276,4 +335,7 @@ python3 pruebas/gen_muestras.py /tmp/muestras
 python3 pruebas/prueba_firmas.py /tmp/recovery /tmp/muestras /tmp/trabajo
 python3 pruebas/prueba_ntfs.py   /tmp/recovery /tmp/muestras /tmp/trabajo
 RECOVERY_TEST_IMG=/tmp/trabajo/borrado_win.img RECOVERY_TEST_SRC=/tmp/muestras go test -run TestSessionImage -v .
+python3 pruebas/prueba_exactitud.py /tmp/trabajo [--profundo]   # exactitud de los estados
+RECOVERY_VAL_DIR=/usr/share go test -run TestValidateDir -v .     # falsas alarmas con archivos sanos
+RECOVERY_DET_DIRS=/usr/share go test -run TestDetect -v .         # detección de daños por tipo
 ```

@@ -88,9 +88,17 @@ type Recoverer struct {
 
 	NGood, NDoubt, NEmpty, NErr, NAlready int64
 	NCarved, NCarvedDoubt                 int64
-	Bytes                                 int64
-	Full                                  bool // el destino se quedó sin espacio
-	lastTick                              time.Time
+
+	// Comprobación del contenido al guardar (se relee lo escrito en el destino).
+	Validate  bool
+	NVerified int64 // comprobados a fondo: correctos
+	NStructOK int64 // estructura correcta (el tipo no lleva sumas de control)
+	NBadFound int64 // dañados descubiertos al comprobar (van a «Dudosos»)
+	Known     *vres // veredicto ya conocido para el próximo archivo
+	Last      vres  // veredicto del último archivo guardado
+	Bytes     int64
+	Full      bool // el destino se quedó sin espacio
+	lastTick  time.Time
 }
 
 func NewRecoverer(s *Scan, out string, rep *Report, flt Filter) *Recoverer {
@@ -295,6 +303,7 @@ func (rc *Recoverer) RecoverMFT(p *Plan) {
 }
 
 func (rc *Recoverer) recoverItem(it *Item) {
+	rc.Last = vres{}
 	r := it.Rec
 	g := rc.s.geomFor(r)
 	final := rc.abs(it.Rel)
@@ -381,9 +390,20 @@ func (rc *Recoverer) recoverItem(it *Item) {
 		rc.rep.Row("DUDOSO", originOf(r), it.Rel, r.Size, r.MTime, strings.Join(why, "; "))
 		return
 	}
+	if v := rc.check(final, ext, r.has(fEncrypted)); v.v == vBad {
+		if err := rc.mkdirFor(doubt); err == nil {
+			os.Remove(doubt)
+			if os.Rename(final, doubt) == nil {
+				it.Rel = dirDoubt + "/" + it.Rel
+			}
+		}
+		rc.NDoubt++
+		rc.rep.Row("DUDOSO", originOf(r), it.Rel, r.Size, r.MTime, v.why)
+		return
+	}
 	rc.NGood++
 	rc.Bytes += r.Size
-	detail := ""
+	detail := rc.Last.why
 	if r.has(fEncrypted) {
 		detail = "cifrado con EFS: solo se podrá abrir con el certificado del usuario original"
 	}
@@ -503,6 +523,7 @@ func (rc *Recoverer) WriteCarved(list []CarvedFile) {
 
 // WriteCarvedOne guarda un archivo localizado por firma.
 func (rc *Recoverer) WriteCarvedOne(cf *CarvedFile) {
+	rc.Last = vres{}
 	final := rc.abs(cf.Rel)
 	if st, err := os.Stat(final); err == nil && st.Size() == cf.Size {
 		rc.NAlready++
@@ -536,6 +557,14 @@ func (rc *Recoverer) WriteCarvedOne(cf *CarvedFile) {
 	}
 	if !cf.MTime.IsZero() {
 		os.Chtimes(final, cf.MTime, cf.MTime)
+	}
+	v := rc.check(final, cf.Ext, false)
+	if v.v == vBad && !cf.Doubt {
+		doubt := rc.abs(dirDoubt + "/" + cf.Rel)
+		if rc.mkdirFor(doubt) == nil && os.Rename(final, doubt) == nil {
+			cf.Rel = dirDoubt + "/" + cf.Rel
+		}
+		cf.Doubt, cf.Why = true, v.why
 	}
 	if cf.Doubt {
 		rc.NCarvedDoubt++
@@ -571,4 +600,29 @@ func removeEmptyDirs(root string) {
 	for i := len(dirs) - 1; i >= 0; i-- {
 		os.Remove(dirs[i]) // solo tiene efecto si está vacía
 	}
+}
+
+// check comprueba a fondo un archivo recién guardado (si está activado).
+func (rc *Recoverer) check(path, ext string, encrypted bool) vres {
+	known := rc.Known
+	rc.Known = nil
+	rc.Last = vres{}
+	if !rc.Validate || encrypted {
+		return rc.Last
+	}
+	if known != nil && known.v != vNone {
+		rc.Last = *known
+	} else {
+		v, why := validateFile(path, ext)
+		rc.Last = vres{v, why}
+	}
+	switch rc.Last.v {
+	case vOK:
+		rc.NVerified++
+	case vStruct:
+		rc.NStructOK++
+	case vBad:
+		rc.NBadFound++
+	}
+	return rc.Last
 }

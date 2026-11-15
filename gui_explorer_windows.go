@@ -44,7 +44,7 @@ func buildExplorer() {
 	a.hCrumb = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBold)
 	a.list = newVList(a.hwnd, idList, []vcol{
 		{"Nombre", 240, false}, {"Tamaño", 80, true}, {"Modificado", 118, false},
-		{"Estado", 120, false}, {"Tipo", 130, false}, {"Ubicación", 260, false},
+		{"Estado", 140, false}, {"Tipo", 130, false}, {"Ubicación", 260, false},
 	}, true, sysSmallList(), false)
 	sendMsg(a.list.hwnd, wmSetFont, uintptr(a.fonts[fBody]), 0)
 	a.list.text = rowText
@@ -66,10 +66,11 @@ func buildExplorer() {
 	setChecked(a.hHideSys, true)
 	a.hSelInfo = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBody)
 	a.hSummary = ctl("BUTTON", "Ver resumen…", wsVisible|wsTabstop, 0, idSummary, fBody)
+	a.hVerify = ctl("BUTTON", "Verificar a fondo…", wsVisible|wsTabstop, 0, idVerify, fBody)
 	a.hRecov = ctl("BUTTON", "Recuperar", wsVisible|wsTabstop|bsOwnerDraw, 0, idRecover, fButton)
 
 	a.expCtls = []syscall.Handle{a.hBack, a.hSrc, a.hStatus, a.hSearch, a.hProgress, a.hStop, a.hTree,
-		a.hCrumb, a.list.hwnd, a.hOverlay, a.hCanvas, a.hPrevName, a.hPrevI, a.hHideSys, a.hSummary, a.hSelInfo, a.hRecov}
+		a.hCrumb, a.list.hwnd, a.hOverlay, a.hCanvas, a.hPrevName, a.hPrevI, a.hHideSys, a.hSummary, a.hVerify, a.hSelInfo, a.hRecov}
 }
 
 // ---------------------------------------------------------------- análisis
@@ -126,6 +127,7 @@ func analyzePath(path, name string) {
 	enable(a.hStop, true)
 	enable(a.hBack, false)
 	enable(a.hRecov, false)
+	enable(a.hVerify, false)
 	updateSelInfo()
 	showPage(pageExplorer)
 	updateStatus()
@@ -185,6 +187,17 @@ func updateStatus() {
 		}
 		return
 	}
+	if a.busy == busyVerify {
+		a.progMu.Lock()
+		rp := a.recProg
+		a.progMu.Unlock()
+		setText(a.hStatus, fmt.Sprintf("Verificando a fondo: %s de %s archivos · %s leídos",
+			groupDigits(int64(rp.done)), groupDigits(int64(rp.total)), humanSize(rp.bytes)))
+		if rp.total > 0 {
+			sendMsg(a.hProgress, pbmSetPos, uintptr(rp.done*1000/rp.total), 0)
+		}
+		return
+	}
 	a.progMu.Lock()
 	p := a.prog
 	a.progMu.Unlock()
@@ -220,6 +233,9 @@ func updateStatus() {
 	if p.Zeroed > 0 {
 		s += fmt.Sprintf(" · %s en blanco (el disco ya los vació)", groupDigits(int64(p.Zeroed)))
 	}
+	if p.Bad > 0 && p.Stage != stageDone {
+		s += fmt.Sprintf(" · %s sobrescritos", groupDigits(int64(p.Bad)))
+	}
 	if a.busy == busyScan && p.Stage != stagePrepare && p.Stage != stageDone && n > 0 {
 		s += " · ya puedes explorar"
 	}
@@ -233,6 +249,7 @@ func scanDone() {
 	atomic.StoreInt32(&stopFlag, 0)
 	enable(a.hBack, true)
 	enable(a.hRecov, true)
+	enable(a.hVerify, true)
 	updateStatus()
 	layout()
 	if n, _ := totalFound(); n == 0 && a.tree != nil && a.tree.Roots[rootLost].Count == 0 {
@@ -707,6 +724,7 @@ func doRecover(dest string) {
 	enable(a.hStop, true)
 	enable(a.hBack, false)
 	enable(a.hRecov, false)
+	enable(a.hVerify, false)
 	layout()
 	updateStatus()
 	ss := a.ss
@@ -731,16 +749,29 @@ func doRecover(dest string) {
 func recoverDone() {
 	a := app
 	a.busy = busyNone
-	writeSummaryFile(a.recDest)
 	atomic.StoreInt32(&stopFlag, 0)
 	enable(a.hBack, true)
 	enable(a.hRecov, true)
+	enable(a.hVerify, true)
 	a.progMu.Lock()
 	res := a.recRes
 	a.progMu.Unlock()
+	rebuildTree() // los estados incluyen ahora lo comprobado al guardar
+	writeSummaryFile(a.recDest)
 	layout()
 	updateStatus()
 	msg := fmt.Sprintf("Se recuperaron %s archivos (%s) en:\n%s", groupDigits(res.Good), humanSize(res.Bytes), a.recDest)
+	if res.Verified+res.StructOK > 0 {
+		msg += fmt.Sprintf("\n\nComprobados al guardar: %s con su contenido verificado (sumas de control correctas)"+
+			" y %s con la estructura correcta.", groupDigits(res.Verified), groupDigits(res.StructOK))
+		if rest := res.Good - res.Verified - res.StructOK; rest > 0 {
+			msg += fmt.Sprintf(" Otros %s son de tipos que no se pueden comprobar (txt sin estructura, dll, bin...).", groupDigits(rest))
+		}
+	}
+	if res.BadFound > 0 {
+		msg += fmt.Sprintf("\n\nAl comprobarlos, %s resultaron dañados (su contenido fue sobrescrito) y se movieron a «%s».",
+			groupDigits(res.BadFound), dirDoubt)
+	}
 	if res.Doubt > 0 {
 		msg += fmt.Sprintf("\n\n%s archivos pueden estar dañados: están en la carpeta «%s».", groupDigits(res.Doubt), dirDoubt)
 	}
@@ -765,6 +796,119 @@ func recoverDone() {
 	if msgBox(a.hwnd, msg+"\n\n¿Abrir la carpeta ahora?", "Recuperación terminada", mbYesNo|mbIconInfo) == idYes {
 		openFolder(a.recDest)
 	}
+}
+
+// ---------------------------------------------------------------- verificar a fondo
+
+// verifySelection: lo marcado o, si no hay nada marcado, todo lo visible.
+func verifySelection() []*Entry {
+	a := app
+	sel := a.tree.CheckedEntries()
+	if len(sel) > 0 {
+		return sel
+	}
+	for _, r := range []int{rootPath, rootLoose, rootCarved} {
+		var walk func(n *Node)
+		walk = func(n *Node) {
+			for _, e := range n.Files {
+				if e.Checkable() {
+					sel = append(sel, e)
+				}
+			}
+			for _, k := range n.Kids {
+				walk(k)
+			}
+		}
+		walk(a.tree.Roots[r])
+	}
+	return sel
+}
+
+// doVerify lee entero cada archivo y comprueba su contenido.
+func doVerify() {
+	a := app
+	if a.ss == nil || a.tree == nil || a.busy != busyNone {
+		return
+	}
+	sel := verifySelection()
+	if len(sel) == 0 {
+		msgBox(a.hwnd, "No hay archivos que verificar.", "Recovery", mbIconInfo)
+		return
+	}
+	var total int64
+	for _, e := range sel {
+		total += e.Size
+	}
+	what := "los archivos marcados"
+	if a.tree.Checked == 0 {
+		what = "todos los archivos encontrados"
+	}
+	if !a.autotest && msgBox(a.hwnd, fmt.Sprintf("Se leerán enteros %s (%s archivos, %s) para comprobar si su contenido "+
+		"es correcto: fotos, documentos de Office, PDF, comprimidos, audio y video.\n\nNo se escribe nada en el disco. "+
+		"Puede tardar (es como copiarlos). Puedes detenerlo cuando quieras.\n\n¿Empezar?",
+		what, groupDigits(int64(len(sel))), humanSize(total)), "Verificar a fondo", mbYesNo|mbIconInfo) != idYes {
+		return
+	}
+	a.busy = busyVerify
+	atomic.StoreInt32(&stopFlag, 0)
+	enable(a.hStop, true)
+	enable(a.hBack, false)
+	enable(a.hRecov, false)
+	enable(a.hVerify, false)
+	layout()
+	updateStatus()
+	ss := a.ss
+	go func() {
+		last := time.Time{}
+		res := ss.DeepVerify(sel, func(done, total int, bytes int64) {
+			a.progMu.Lock()
+			a.recProg.done, a.recProg.total, a.recProg.bytes = done, total, bytes
+			a.progMu.Unlock()
+			if time.Since(last) > 200*time.Millisecond || done == total {
+				last = time.Now()
+				if atomic.CompareAndSwapInt32(&a.progPnd, 0, 1) {
+					postMsg(a.hwnd, wmAppVerProg, 0, 0)
+				}
+			}
+		})
+		a.progMu.Lock()
+		a.verRes = res
+		a.progMu.Unlock()
+		postMsg(a.hwnd, wmAppVerDone, 0, 0)
+	}()
+}
+
+func verifyDone() {
+	a := app
+	a.busy = busyNone
+	atomic.StoreInt32(&stopFlag, 0)
+	enable(a.hBack, true)
+	enable(a.hRecov, true)
+	enable(a.hVerify, true)
+	a.progMu.Lock()
+	res := a.verRes
+	a.progMu.Unlock()
+	rebuildTree()
+	layout()
+	updateStatus()
+	msg := fmt.Sprintf("Archivos comprobados: %s\n\n"+
+		"  Verificados (contenido correcto, con sumas de control):  %s\n"+
+		"  Estructura correcta (su tipo no lleva sumas de control):  %s\n"+
+		"  DAÑADOS (contenido sobrescrito):  %s\n"+
+		"  Sin forma de comprobar (txt sin estructura, dll, bin...):  %s",
+		groupDigits(int64(res.Checked)), groupDigits(int64(res.OK)), groupDigits(int64(res.Struct)),
+		groupDigits(int64(res.Bad)), groupDigits(int64(res.Unknown)))
+	if res.Bad > 0 {
+		msg += "\n\nLos dañados aparecen ahora como «Dañado» en la columna Estado."
+	}
+	if res.Stopped {
+		msg += "\n\nLa verificación se detuvo antes de terminar."
+	}
+	if a.autotest {
+		autotestAfterVerify()
+		return
+	}
+	msgBox(a.hwnd, msg, "Verificación terminada", mbIconInfo)
 }
 
 // ---------------------------------------------------------------- pruebas automáticas
@@ -821,6 +965,23 @@ func autotestAfterScan() {
 		app.list.refresh()
 		updateSelInfo()
 	}
+	if os.Getenv("RECOVERY_GUI_VERIFY") != "" {
+		doVerify() // sigue en autotestAfterVerify
+		return
+	}
+	autotestFinish()
+}
+
+func autotestAfterVerify() {
+	if f := os.Getenv("RECOVERY_GUI_VERIFY_OUT"); f != "" {
+		r := app.verRes
+		os.WriteFile(f, []byte(fmt.Sprintf("comprobados=%d verificados=%d estructura=%d danados=%d sin_comprobar=%d\n",
+			r.Checked, r.OK, r.Struct, r.Bad, r.Unknown)), 0o644)
+	}
+	autotestFinish()
+}
+
+func autotestFinish() {
 	if os.Getenv("RECOVERY_GUI_SUMMARY") != "" {
 		showSummary()
 	}

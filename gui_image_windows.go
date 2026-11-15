@@ -176,10 +176,28 @@ func startImage(dest string) {
 		return
 	}
 	if !job.Resumed && !a.autotest {
-		if free := freeSpace(dest); free >= 0 && free < src.Size {
+		free := freeSpace(dest)
+		if fs := destFS(dest); fs != "" && !strings.EqualFold(fs, "NTFS") {
+			// Sin NTFS no hay archivos «dispersos»: la imagen ocupa el disco entero.
+			if free >= 0 && free < src.Size {
+				dev.Close()
+				msgBox(a.hwnd, fmt.Sprintf("El disco destino está en %s. En %s la imagen ocupa SIEMPRE el tamaño completo "+
+					"del disco de origen (%s), aunque esté casi vacío, y ahí solo hay %s libres.\n\n"+
+					"Solución: usa un disco en NTFS (en NTFS las zonas vacías no ocupan espacio).",
+					fs, fs, humanSize(src.Size), humanSize(free)), "No cabe", mbIconError)
+				return
+			}
+			if msgBox(a.hwnd, fmt.Sprintf("El disco destino está en %s: la imagen ocupará el tamaño completo del disco "+
+				"de origen (%s) y tardará más, porque las zonas vacías también se escriben.\n\n"+
+				"Si puedes, usa un disco en NTFS. ¿Continuar de todos modos?", fs, humanSize(src.Size)),
+				"Imagen del disco", mbYesNo|mbIconWarning|mbDefButton2) != idYes {
+				dev.Close()
+				return
+			}
+		} else if free >= 0 && free < src.Size {
 			q := fmt.Sprintf("La imagen puede llegar a ocupar %s y en el destino hay %s libres.\n\n"+
-				"Las zonas vacías del disco no ocupan espacio, así que puede caber, pero si el disco "+
-				"está muy lleno se quedará a medias. ¿Continuar?", humanSize(src.Size), humanSize(free))
+				"En NTFS las zonas vacías del disco no ocupan espacio, así que puede caber, pero si el disco "+
+				"de origen está muy lleno se quedará a medias. ¿Continuar?", humanSize(src.Size), humanSize(free))
 			if msgBox(a.hwnd, q, "Espacio", mbYesNo|mbIconWarning) != idYes {
 				dev.Close()
 				return

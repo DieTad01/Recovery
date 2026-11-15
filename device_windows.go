@@ -413,16 +413,23 @@ func setSparse(f *os.File) {
 }
 
 // destIsFAT32 indica si la carpeta está en una unidad FAT32 (máximo 4 GB por archivo).
-func destIsFAT32(dir string) bool {
+func destIsFAT32(dir string) bool { return strings.EqualFold(destFS(dir), "FAT32") }
+
+// destFS devuelve el sistema de archivos de la unidad de la carpeta ("NTFS",
+// "exFAT", "FAT32"...; "" si no se sabe).
+func destFS(dir string) string {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return false
+		return ""
 	}
 	root := filepath.VolumeName(abs) + `\`
 	var fsname [261]uint16
 	r, _, _ := procGetVolumeInformationW.Call(uintptr(unsafe.Pointer(utf16Ptr(root))),
 		0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&fsname[0])), 261)
-	return r != 0 && strings.EqualFold(syscall.UTF16ToString(fsname[:]), "FAT32")
+	if r == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(fsname[:])
 }
 
 var procAttachConsole = kernel32.NewProc("AttachConsole")

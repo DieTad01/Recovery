@@ -31,6 +31,7 @@ const (
 	idList
 	idHideSys
 	idSummary
+	idVerify
 	idRecover
 	idMakeImage
 	idOpenImage
@@ -50,6 +51,8 @@ const (
 	wmAppTable
 	wmAppImgProg
 	wmAppImgDone
+	wmAppVerProg
+	wmAppVerDone
 )
 
 const (
@@ -68,6 +71,7 @@ const (
 	busyScan
 	busyRecover
 	busyImage
+	busyVerify
 )
 
 // Colores (estilo Windows 11).
@@ -130,6 +134,7 @@ type appState struct {
 	list                                 *vlist
 	hCanvas, hPrevName, hPrevI           syscall.Handle
 	hHideSys, hSelInfo, hSummary, hRecov syscall.Handle
+	hVerify                              syscall.Handle
 
 	ss       *Session
 	srcName  string
@@ -152,6 +157,7 @@ type appState struct {
 	}
 	recRes  RecoverResult
 	recDest string
+	verRes  VerifyResult
 
 	prevGen int64
 	prevMu  sync.Mutex
@@ -507,7 +513,7 @@ func layout() {
 	moveWin(a.list.hwnd, lx, y0+sc(26), lw, yb-y0-sc(26)-sc(8))
 	// La columna «Nombre» ocupa lo que queda para que se vean nombre,
 	// tamaño, fecha y estado sin desplazarse.
-	nameW := lw - sc(80+118+120) - sc(28)
+	nameW := lw - sc(80+118+140) - sc(28)
 	if nameW < sc(180) {
 		nameW = sc(180)
 	}
@@ -518,8 +524,9 @@ func layout() {
 	moveWin(a.hPrevName, px, y0+sc(240), pw, sc(40))
 	moveWin(a.hPrevI, px, y0+sc(282), pw, yb-y0-sc(282)-sc(8))
 	moveWin(a.hHideSys, sc(16), yb+sc(20), sc(300), sc(24))
-	moveWin(a.hSummary, sc(324), yb+sc(14), sc(150), sc(34))
-	moveWin(a.hSelInfo, sc(484), yb+sc(22), W-sc(484)-sc(16)-sc(210), sc(22))
+	moveWin(a.hSummary, sc(324), yb+sc(14), sc(140), sc(34))
+	moveWin(a.hVerify, sc(472), yb+sc(14), sc(150), sc(34))
+	moveWin(a.hSelInfo, sc(632), yb+sc(22), W-sc(632)-sc(16)-sc(210), sc(22))
 	moveWin(a.hRecov, W-sc(16)-sc(190), yb+sc(10), sc(190), sc(44))
 	invalidate(a.hwnd)
 }
@@ -601,6 +608,13 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 		return 0
 	case wmAppImgDone:
 		imageDone()
+		return 0
+	case wmAppVerProg:
+		atomic.StoreInt32(&app.progPnd, 0)
+		updateStatus()
+		return 0
+	case wmAppVerDone:
+		verifyDone()
 		return 0
 	case wmDpiChanged:
 		app.dpi = int(wp & 0xFFFF)
@@ -715,6 +729,8 @@ func onCommand(id, code int) {
 		rebuildTree()
 	case idSummary:
 		showSummary()
+	case idVerify:
+		doVerify()
 	case idRecover:
 		doRecover("")
 	case idMakeImage:
