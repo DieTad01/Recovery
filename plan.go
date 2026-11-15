@@ -69,10 +69,12 @@ func (s *Scan) dirPath(d *FileRec, depth int) (string, bool) {
 		d.path, d.rooted, d.resolved = "", true, true
 		return "", true
 	}
-	name := sanitizeName(d.Name)
 	if d.Name == "" {
-		name = fmt.Sprintf("carpeta_sin_nombre_%d", d.RecNo)
+		// Carpeta cuyo nombre ya no existe: sus archivos se agrupan igualmente.
+		d.path, d.rooted, d.resolved = fmt.Sprintf("%s%d", lostPrefix, d.RecNo), false, true
+		return d.path, false
 	}
+	name := sanitizeName(d.Name)
 	var base string
 	var rooted bool
 	switch {
@@ -159,7 +161,7 @@ func isSystemFile(dir string, rooted bool, name string) bool {
 
 // measure calcula dónde están los datos del archivo y cuánto de ellos ha
 // sido ya reutilizado por el sistema de archivos actual.
-func (s *Scan) measure(r *FileRec, g Geometry) (total, overw, phys int64) {
+func (s *Scan) measure(r *FileRec, g Geometry, newer []iv) (total, overw, phys int64) {
 	phys = -1
 	runs, _ := r.flatten()
 	remaining := r.Size
@@ -187,15 +189,19 @@ func (s *Scan) measure(r *FileRec, g Geometry) (total, overw, phys int64) {
 			overw += n
 			continue
 		}
+		var o int64
 		if v := s.volAt(off); v != nil {
 			c0 := (off - v.Start) / v.CS
 			c1 := (off - v.Start + n + v.CS - 1) / v.CS
-			if o := v.countAlloc(c0, c1) * v.CS; o > n {
-				overw += n
-			} else {
-				overw += o
-			}
+			o = v.countAlloc(c0, c1) * v.CS
 		}
+		// Un archivo del sistema anterior también está sobrescrito donde
+		// después escribió un archivo del sistema actual (aunque ya se borrara).
+		o += ivOverlapBytes(newer, off, off+n)
+		if o > n {
+			o = n
+		}
+		overw += o
 	}
 	return
 }
@@ -210,6 +216,15 @@ func (s *Scan) BuildPlan(flt Filter) *Plan {
 		name string
 	}
 	var pends []pend
+	// Zonas escritas por archivos del sistema actual que ya fueron borrados
+	// (p. ej. temporales de la instalación de Windows).
+	var newer []iv
+	for _, r := range s.Recs {
+		if r.has(fLive) && !r.has(fInUse|fDir|fResident) && r.has(fHasData) && r.Size > 0 {
+			newer = appendRuns(newer, r, s.geomFor(r))
+		}
+	}
+	newer = mergeIvs(newer)
 	for _, r := range s.Recs {
 		if r.has(fDir) || !r.has(fHasData) || r.Size <= 0 || (r.has(fLive) && r.has(fInUse)) {
 			continue
@@ -224,7 +239,11 @@ func (s *Scan) BuildPlan(flt Filter) *Plan {
 		if r.has(fResident) {
 			phys = r.Off
 		} else {
-			total, overw, phys = s.measure(r, g)
+			if r.has(fLive) {
+				total, overw, phys = s.measure(r, g, nil)
+			} else {
+				total, overw, phys = s.measure(r, g, newer)
+			}
 		}
 		intact := r.has(fResident) || (total > 0 && overw == 0)
 		addCovered := func() {
@@ -377,6 +396,15 @@ func mergeIvs(v []iv) []iv {
 func ivContains(v []iv, off int64) bool {
 	i := sort.Search(len(v), func(i int) bool { return v[i].b > off })
 	return i < len(v) && v[i].a <= off
+}
+
+// ivOverlapBytes cuenta cuántos bytes de [a, b) caen dentro de los intervalos.
+func ivOverlapBytes(v []iv, a, b int64) int64 {
+	var n int64
+	for i := sort.Search(len(v), func(i int) bool { return v[i].b > a }); i < len(v) && v[i].a < b; i++ {
+		n += min64(v[i].b, b) - max64(v[i].a, a)
+	}
+	return n
 }
 
 // ivOverlaps indica si [a, b) toca algún intervalo.

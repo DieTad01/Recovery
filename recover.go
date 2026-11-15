@@ -102,7 +102,17 @@ func (rc *Recoverer) copyRange(k *sink, off, n int64) {
 		if m > n {
 			m = n
 		}
-		got, _ := rc.s.Dev.ReadAt(rc.buf[:m], off)
+		// Se lee redondeando al sector para usar la lectura directa.
+		rd := m
+		if a := int64(rc.s.Dev.Align); a > 1 && off%a == 0 && m%a != 0 {
+			if r := (m + a - 1) / a * a; r <= int64(len(rc.buf)) && off+r <= rc.s.Dev.Size {
+				rd = r
+			}
+		}
+		got, _ := rc.s.Dev.ReadAt(rc.buf[:rd], off)
+		if int64(got) > m {
+			got = int(m)
+		}
 		k.write(rc.buf[:got])
 		if int64(got) < m {
 			k.zeros(m - int64(got))
@@ -311,6 +321,17 @@ func (rc *Recoverer) recoverItem(it *Item) {
 		os.Chtimes(final, t, t)
 	}
 	ext := extOf(r.Name)
+	if r.Name == "" {
+		// Sin nombre original: al menos se le pone la extensión que corresponde.
+		if e := guessExt(k.head); e != "" {
+			if os.Rename(final, final+"."+e) == nil {
+				final += "." + e
+				doubt += "." + e
+				it.Rel += "." + e
+				ext = e
+			}
+		}
+	}
 	var why []string
 	if it.Overw > 0 {
 		why = append(why, fmt.Sprintf("%d%% de sus datos fue sobrescrito por archivos nuevos", it.Overw*100/max64(it.Total, 1)))

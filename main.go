@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -316,6 +315,7 @@ func run(cfg *Config) error {
 		}
 	}()
 
+	keepAwake()
 	say("Recovery %s  -  %s", version, time.Now().Format("2006-01-02 15:04"))
 	say("Origen:  %s  (%s)", src, humanSize(dev.Size))
 	say("Destino: %s", out)
@@ -556,14 +556,4 @@ func writeLog(out string) {
 		sb.WriteString("\r\n")
 	}
 	os.WriteFile(filepath.Join(out, "informe.txt"), []byte(sb.String()), 0o644)
-}
-
-// sortedKeys se usa en pruebas y diagnósticos.
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

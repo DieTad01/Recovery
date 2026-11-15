@@ -67,6 +67,8 @@ func listSources() []Source {
 	return out
 }
 
+func keepAwake() {}
+
 func isAdmin() bool                  { return os.Geteuid() == 0 }
 func relaunchElevated() error        { return fmt.Errorf("ejecuta el programa con sudo") }
 func describeDrive(*Device) []string { return nil }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -25,11 +26,13 @@ var (
 )
 
 const (
-	ioctlDiskGetDriveGeometry = 0x00070000
-	ioctlDiskGetLengthInfo    = 0x0007405C
-	fsctlAllowExtendedDasdIO  = 0x00090083
-	ioctlVolumeGetDiskExtents = 0x00560000
-	ioctlStorageQueryProperty = 0x002D1400
+	ioctlDiskGetDriveGeometry   = 0x00070000
+	ioctlDiskGetLengthInfo      = 0x0007405C
+	ioctlDiskGetPartitionInfoEx = 0x00070048
+	ioctlDiskGetDriveGeometryEx = 0x000700A0
+	fsctlAllowExtendedDasdIO    = 0x00090083
+	ioctlVolumeGetDiskExtents   = 0x00560000
+	ioctlStorageQueryProperty   = 0x002D1400
 
 	errorHandleEOF      = syscall.Errno(38)
 	errorDiskFull       = syscall.Errno(112)
@@ -121,27 +124,80 @@ func openRaw(path string) (rawReader, int64, int, error) {
 	// arranque de respaldo). Si falla no importa.
 	ioctl(h, fsctlAllowExtendedDasdIO, nil, nil)
 
-	var size int64
-	lenBuf := make([]byte, 8)
-	if n, err := ioctl(h, ioctlDiskGetLengthInfo, nil, lenBuf); err == nil && n >= 8 {
-		size = int64(le64(lenBuf))
-	}
 	sector := 512
 	geo := make([]byte, 24)
+	var geoSize int64
 	if n, err := ioctl(h, ioctlDiskGetDriveGeometry, nil, geo); err == nil && n >= 24 {
 		bps := int(le32(geo[20:]))
 		if bps >= 512 && bps <= 65536 && bps&(bps-1) == 0 {
 			sector = bps
 		}
-		if size <= 0 {
-			size = int64(le64(geo[0:])) * int64(le32(geo[12:])) * int64(le32(geo[16:])) * int64(bps)
-		}
+		geoSize = int64(le64(geo[0:])) * int64(le32(geo[12:])) * int64(le32(geo[16:])) * int64(bps)
+	}
+	size := deviceSize(h)
+	if size <= 0 {
+		size = geoSize
+	}
+	w := &winFile{h}
+	if size <= 0 {
+		size = probeSize(w, sector)
 	}
 	if size <= 0 {
 		syscall.CloseHandle(h)
 		return nil, 0, 0, fmt.Errorf("no se pudo determinar el tamaño de %s", path)
 	}
-	return &winFile{h}, size, sector, nil
+	return w, size, sector, nil
+}
+
+// deviceSize pregunta a Windows el tamaño de un volumen o disco, probando
+// varias consultas porque no todos los controladores admiten las mismas.
+func deviceSize(h syscall.Handle) int64 {
+	b := make([]byte, 256)
+	if n, err := ioctl(h, ioctlDiskGetLengthInfo, nil, b[:8]); err == nil && n >= 8 {
+		if v := int64(le64(b)); v > 0 {
+			return v
+		}
+	}
+	if n, err := ioctl(h, ioctlDiskGetPartitionInfoEx, nil, b[:144]); err == nil && n >= 24 {
+		if v := int64(le64(b[16:])); v > 0 {
+			return v
+		}
+	}
+	if n, err := ioctl(h, ioctlDiskGetDriveGeometryEx, nil, b); err == nil && n >= 32 {
+		if v := int64(le64(b[24:])); v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+// probeSize averigua el tamaño leyendo: último recurso cuando el sistema
+// no lo informa. Busca el último sector legible por bisección.
+func probeSize(w *winFile, sector int) int64 {
+	buf := make([]byte, sector)
+	ok := func(sec int64) bool {
+		n, _ := w.ReadAt(buf, sec*int64(sector))
+		return n == sector
+	}
+	if !ok(0) {
+		return 0
+	}
+	lo, hi := int64(0), int64(1)
+	for ok(hi) {
+		lo, hi = hi, hi*2
+		if hi > 1<<50/int64(sector) {
+			return 0
+		}
+	}
+	for hi-lo > 1 {
+		mid := lo + (hi-lo)/2
+		if ok(mid) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return hi * int64(sector)
 }
 
 var (
@@ -285,10 +341,7 @@ func listSources() []Source {
 			uintptr(unsafe.Pointer(&fsname[0])), 261)
 		var size int64
 		if h, err := openHandle(`\\.\` + letter + ":"); err == nil {
-			b := make([]byte, 8)
-			if n, err := ioctl(h, ioctlDiskGetLengthInfo, nil, b); err == nil && n >= 8 {
-				size = int64(le64(b))
-			}
+			size = deviceSize(h)
 			syscall.CloseHandle(h)
 		}
 		if size == 0 {
@@ -320,13 +373,12 @@ func listSources() []Source {
 		if err != nil {
 			continue
 		}
-		var size int64
-		b := make([]byte, 8)
-		if m, err := ioctl(h, ioctlDiskGetLengthInfo, nil, b); err == nil && m >= 8 {
-			size = int64(le64(b))
-		}
+		size := deviceSize(h)
 		si := queryStorage(h)
 		syscall.CloseHandle(h)
+		if size <= 0 {
+			continue
+		}
 		desc := fmt.Sprintf("Disco físico %d completo:  %s", n, humanSize(size))
 		if si.model != "" {
 			desc += ", " + si.model
@@ -343,6 +395,16 @@ func listSources() []Source {
 		out = append(out, Source{Path: path, Label: desc, Size: size, Disk: true})
 	}
 	return out
+}
+
+// keepAwake evita que Windows suspenda el equipo durante un escaneo largo.
+func keepAwake() {
+	go func() {
+		runtime.LockOSThread()
+		const esContinuous, esSystemRequired = 0x80000000, 0x00000001
+		kernel32.NewProc("SetThreadExecutionState").Call(esContinuous | esSystemRequired)
+		select {} // el estado dura mientras viva este hilo
+	}()
 }
 
 func isAdmin() bool {

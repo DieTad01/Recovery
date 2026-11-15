@@ -283,12 +283,14 @@ func parseMFTRecord(rec []byte, off int64) *FileRec {
 		r.MTime = fnTime
 	}
 	if r.has(fExt) {
-		if len(r.Segs) == 0 {
+		// Un registro de extensión interesa si aporta tramos de datos o el
+		// nombre (cuando no cabía en el registro base).
+		if len(r.Segs) == 0 && r.Name == "" {
 			return nil
 		}
 		return r
 	}
-	if r.Name == "" && !r.has(fHasData) {
+	if r.Name == "" && !r.has(fHasData) && !r.has(fAttrList) {
 		return nil
 	}
 	return r

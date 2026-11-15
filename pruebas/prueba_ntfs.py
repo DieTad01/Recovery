@@ -2,7 +2,8 @@
 """Pruebas de extremo a extremo con imágenes NTFS reales (creadas con ntfs-3g).
 
 Escenarios:
-  borrado     - se borran los archivos del usuario en un NTFS en uso
+  borrado-windows - borrado simulado como lo hace Windows (ver borrado_windows.py)
+  borrado     - se borran los archivos del usuario en un NTFS en uso (con ntfs-3g)
   formateo    - formateo rápido + "reinstalación" que sobrescribe parte del disco
   reinstalado - como el anterior, pero la instalación nueva destruye además
                 los registros MFT de las carpetas y de muchos archivos antiguos
@@ -16,7 +17,8 @@ Uso (como root):  prueba_ntfs.py RECOVERY_BIN CARPETA_MUESTRAS CARPETA_TRABAJO [
 import hashlib, os, random, shutil, struct, subprocess, sys, time
 
 binary, muestras, work = sys.argv[1:4]
-which = sys.argv[4:] or ["borrado", "formateo", "reinstalado", "particion", "fragmentado", "sector4k"]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+which = sys.argv[4:] or ["borrado-windows", "borrado", "formateo", "reinstalado", "particion", "fragmentado", "sector4k"]
 os.makedirs(work, exist_ok=True)
 mnt = os.path.join(work, "mnt")
 os.makedirs(mnt, exist_ok=True)
@@ -207,6 +209,26 @@ print("Creando el sistema de archivos antiguo...")
 orig = populate(base)
 print("  %d archivos de usuario" % len(orig))
 
+if "borrado-windows" in which:
+    print("\n[borrado-windows] borrado tal como lo hace Windows (los registros conservan nombre y carpeta)")
+    import borrado_windows
+    img = os.path.join(work, "borrado_win.img")
+    shutil.copy(base, img)
+    n = borrado_windows.borrar(img, "Users")
+    print("    %d registros MFT liberados" % n)
+    mount(img, "ro")
+    existing = {h for h, _ in tree_hashes(mnt).values()}
+    umount()
+    out = os.path.join(work, "out_borrado_win")
+    recover(img, out)
+    st, missing = evaluate(orig, out, forbid=existing)
+    check("borrado-windows", st["wrong"] == 0 and st["leaked"] == 0, "archivos incorrectos o que no estaban perdidos")
+    check("borrado-windows", st["exact_path"] == st["total"], "no se recuperó todo con su ruta original")
+    check("borrado-windows", st["doubt"] == 0 and st["carved_total"] == 0, "aparecieron dudosos o duplicados por firma")
+    names = set(tree_hashes(os.path.join(out, "Archivos")))
+    check("borrado-windows", set(k for k, v in orig.items() if v[1] > 0) <= names | {"Users/Ana María/Documents/léeme.txt", "Users/Ana María/Desktop/enlace a léeme.txt"},
+          "faltan rutas originales")
+
 if "borrado" in which:
     print("\n[borrado] se borra la carpeta Users (sin escribir nada después)")
     img = os.path.join(work, "borrado.img")
@@ -329,13 +351,14 @@ if "fragmentado" in which:
     print("\n[fragmentado] archivo repartido en cientos de fragmentos ($ATTRIBUTE_LIST)")
     img = os.path.join(work, "fragmentado.img")
     with open(img, "wb") as f:
-        f.truncate(40 << 20)
+        f.truncate(96 << 20)
     sh("mkntfs", "-F", "-f", "-q", img)
     mount(img)
     rnd = random.Random(5)
     os.makedirs(os.path.join(mnt, "relleno"))
-    for i in range(2400):
-        open(os.path.join(mnt, "relleno", "r%04d" % i), "wb").write(rnd.randbytes(4096))
+    NREL = 9000
+    for i in range(NREL):
+        open(os.path.join(mnt, "relleno", "r%05d" % i), "wb").write(rnd.randbytes(4096))
     with open(os.path.join(mnt, "tapon.bin"), "wb") as f:  # ocupa todo el espacio libre restante
         for step in (1 << 20, 4096):
             try:
@@ -343,27 +366,41 @@ if "fragmentado" in which:
                     f.write(b"\xAA" * step); f.flush(); os.fsync(f.fileno())
             except OSError:
                 pass
-    for i in range(0, 2400, 2):
-        os.remove(os.path.join(mnt, "relleno", "r%04d" % i))
+    for i in range(0, NREL, 2):  # deja miles de huecos pequeños repartidos por el volumen
+        os.remove(os.path.join(mnt, "relleno", "r%05d" % i))
     os.makedirs(os.path.join(mnt, "Videos"))
-    data = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + rnd.randbytes(3 << 20)
+    data = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + rnd.randbytes(13 << 20)
     with open(os.path.join(mnt, "Videos", "muy fragmentado.mp4"), "wb") as f:
         f.write(data)
     umount()
     info = sh("ntfsinfo", "-v", "-F", "Videos/muy fragmentado.mp4", img, check=False)
-    nruns = sum(1 for l in info.splitlines() if l.strip().startswith("0x") or l.strip()[:1].isdigit() and "0x" in l)
+    nruns = sum(1 for l in info.splitlines() if l.startswith("\t\t\t0x"))
     has_list = "$ATTRIBUTE_LIST" in info
-    print("    tramos: ~%d   usa $ATTRIBUTE_LIST: %s" % (nruns, has_list))
-    check("fragmentado", has_list, "la imagen de prueba no quedó suficientemente fragmentada")
+    print("    tramos: %d   usa $ATTRIBUTE_LIST: %s" % (nruns, has_list))
+    check("fragmentado", has_list and nruns > 200, "la imagen de prueba no quedó suficientemente fragmentada")
+    want = hashlib.sha1(data).hexdigest()
+    # a) borrado como lo hace Windows: conserva nombre y carpeta (aquí el
+    #    nombre está en un registro de extensión, no en el registro base).
+    import borrado_windows
+    img2 = os.path.join(work, "fragmentado_win.img")
+    shutil.copy(img, img2)
+    borrado_windows.borrar(img2, "Videos")
+    out = os.path.join(work, "out_fragmentado_win")
+    recover(img2, out, "-sin-firmas")
+    hits = [k for k, (h, _) in tree_hashes(out).items() if h == want]
+    print("    borrado estilo Windows ->", hits)
+    check("fragmentado", hits == ["Archivos/Videos/muy fragmentado.mp4"], "no se recuperó idéntico y con su ruta")
+    # b) borrado con ntfs-3g, que elimina el nombre: debe salir igualmente,
+    #    sin nombre pero con su extensión deducida del contenido.
     mount(img)
     os.remove(os.path.join(mnt, "Videos", "muy fragmentado.mp4"))
     umount()
     out = os.path.join(work, "out_fragmentado")
     recover(img, out, "-sin-firmas")
-    rec = os.path.join(out, "Archivos", "Videos", "muy fragmentado.mp4")
-    okf = os.path.isfile(rec) and open(rec, "rb").read() == data
-    print("    recuperado idéntico:", okf)
-    check("fragmentado", okf, "el archivo fragmentado no se recuperó idéntico")
+    hits = [k for k, (h, _) in tree_hashes(out).items() if h == want]
+    print("    borrado con ntfs-3g    ->", hits)
+    check("fragmentado", len(hits) == 1 and hits[0].endswith(".mp4") and not hits[0].startswith("Dudosos"),
+          "el archivo fragmentado sin nombre no se recuperó idéntico")
 
 if "sector4k" in which:
     print("\n[sector4k] volumen con sectores de 4096 bytes (registros MFT de 4 KiB)")

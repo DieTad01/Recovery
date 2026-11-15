@@ -292,7 +292,11 @@ func (s *Scan) scanLiveMFT(v *Volume, progress func()) {
 							bmp = fr
 						case fr.has(fDir):
 							s.Recs = append(s.Recs, fr)
-						case !fr.has(fExt):
+						case fr.has(fExt):
+							if fr.Name != "" && len(fr.Segs) == 0 {
+								s.Recs = append(s.Recs, fr) // nombre de una carpeta guardado en una extensión
+							}
+						default:
 							v.Existing++
 						}
 						continue
@@ -542,7 +546,7 @@ func (s *Scan) attachExtensions() {
 		var best *FileRec
 		var bestD int64
 		for _, c := range s.lookup(e.has(fLive), e.Group, e.BaseRec) {
-			if c.has(fDir) || (c.Seq != e.BaseSeq && c.Seq != e.BaseSeq+1) {
+			if c.Seq != e.BaseSeq && c.Seq != e.BaseSeq+1 {
 				continue
 			}
 			d := absDiff(c.baseOff(), e.baseOff())
@@ -551,6 +555,15 @@ func (s *Scan) attachExtensions() {
 			}
 		}
 		if best == nil {
+			continue
+		}
+		if e.Name != "" && best.Name == "" {
+			best.Name, best.ParentRec, best.ParentSeq = e.Name, e.ParentRec, e.ParentSeq
+			if best.MTime == 0 {
+				best.MTime = e.MTime
+			}
+		}
+		if best.has(fDir) || len(e.Segs) == 0 {
 			continue
 		}
 		for _, sg := range e.Segs {
