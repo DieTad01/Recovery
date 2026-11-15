@@ -404,6 +404,27 @@ func listSources() []Source {
 	return out
 }
 
+// setSparse marca el archivo como disperso (NTFS): las zonas a cero de
+// una imagen de disco no ocupan espacio en el destino.
+func setSparse(f *os.File) {
+	const fsctlSetSparse = 0x000900C4
+	var ret uint32
+	syscall.DeviceIoControl(syscall.Handle(f.Fd()), fsctlSetSparse, nil, 0, nil, 0, &ret, nil)
+}
+
+// destIsFAT32 indica si la carpeta está en una unidad FAT32 (máximo 4 GB por archivo).
+func destIsFAT32(dir string) bool {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	root := filepath.VolumeName(abs) + `\`
+	var fsname [261]uint16
+	r, _, _ := procGetVolumeInformationW.Call(uintptr(unsafe.Pointer(utf16Ptr(root))),
+		0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&fsname[0])), 261)
+	return r != 0 && strings.EqualFold(syscall.UTF16ToString(fsname[:]), "FAT32")
+}
+
 var procAttachConsole = kernel32.NewProc("AttachConsole")
 
 // attachConsole engancha la salida a la consola que lanzó el programa.

@@ -10,7 +10,9 @@ encontrado antes de recuperarlo**, como los programas comerciales:
   comprimidos cuyo nombre ya no existe.
 - Muestra todo en un **árbol de carpetas** con **vista previa** de fotos y
   textos, un **buscador** y **casillas** para elegir qué recuperar.
-- Indica el **estado de cada archivo** (bueno, dañado en parte, no recuperable).
+- Indica el **estado de cada archivo** (bueno, dañado en parte, en blanco, no recuperable).
+- **Crea una imagen del disco** tolerante a sectores dañados y reanudable, para
+  trabajar sobre la copia y no sobre el disco del cliente (imprescindible en SSD/NVMe).
 - Incluye dos herramientas: **estado de los discos** y **programas que más ocupan**.
 - **Solo lee** el disco afectado. Nunca escribe en él.
 
@@ -28,6 +30,40 @@ Es un único archivo (`recovery.exe`), no se instala y no necesita nada más.
    programa no deja guardar en la misma unidad que se analiza.
 3. **No descargues `recovery.exe` en el disco afectado**: cópialo a la memoria
    USB o al disco externo desde otro equipo y ejecútalo desde ahí.
+
+## Lo más importante: haz primero una imagen del disco
+
+Recuperar directamente desde el disco del cliente es arriesgado: si se ejecuta
+dentro de su Windows, Windows sigue escribiendo y pisa lo que se quiere salvar;
+si el disco está fallando, cada lectura lo desgasta; y en los **SSD (NVMe o
+SATA)** el propio disco puede seguir vaciando lo borrado mientras está encendido
+(TRIM). Lo profesional es **copiar el disco entero a un archivo de imagen una
+sola vez** y recuperar desde la imagen todas las veces que haga falta.
+
+1. **No arranques el Windows del cliente.** Apaga el equipo y saca el disco.
+   Para un NVMe usa una caja o adaptador **USB para NVMe M.2** y conéctalo a tu
+   equipo (o ponlo como segundo disco en tu PC).
+2. *(Opcional, máxima seguridad)* Antes de conectarlo, en una consola de
+   administrador: `diskpart` → `san` (anota el valor) → `san policy=OfflineAll`.
+   Así Windows no monta ni escribe en los discos nuevos. Al terminar, vuelve a
+   poner el valor anotado.
+3. En Recovery elige el **«Disco físico …»** y pulsa **«Crear imagen del disco…»**.
+   Elige una carpeta en otro disco (NTFS o exFAT; FAT32 no sirve) con espacio
+   para el tamaño del disco; las zonas vacías no ocupan sitio.
+4. Al terminar, pulsa **«Analizar la imagen»** (o más tarde **«Abrir imagen…»**)
+   y recupera desde ahí. El disco del cliente ya puedes desconectarlo.
+
+![Imagen del disco en curso](docs/imagen.png)
+
+- Se puede **detener y continuar**: vuelve a elegir la misma unidad y la misma
+  carpeta y sigue donde se quedó.
+- Los sectores que no se pueden leer quedan a cero en la imagen y se anotan en
+  el archivo `.map` (formato de GNU ddrescue, por si algún día quieres seguir
+  con esa herramienta).
+- **Si Windows pide la clave de BitLocker al conectar el disco**, estaba cifrado.
+  La clave de recuperación suele estar en la cuenta Microsoft del dueño
+  (account.microsoft.com/devices/recoverykey). Desbloquéalo y haz la imagen de su
+  **letra de unidad**, no del disco físico (el programa también lo avisa).
 
 ## Cómo usarlo
 
@@ -88,6 +124,12 @@ No distingue mayúsculas ni acentos («mama» encuentra «Mamá»).
   puede abrir a medias.
 - **Puede estar incompleto**: encontrado por su contenido pero estaba
   fragmentado.
+- **En blanco**: el archivo existe, pero el disco ya vació su contenido (lo
+  hacen los SSD con TRIM, y también «limpiar la unidad» al restablecer Windows).
+  No se puede recuperar con ningún programa; el explorador lo detecta leyendo
+  unas muestras de cada archivo y así sabes desde el principio qué se puede salvar.
+
+![Archivos en blanco detectados](docs/en_blanco.png)
 - **No recuperable**: el archivo existía pero su contenido ya no está.
 
 ## Herramientas
@@ -123,10 +165,14 @@ y el contenido se guardan en sitios distintos del disco. Tras una restauración
 suele sobrevivir la «ficha» del archivo pero no su contenido, si el Windows nuevo
 reutilizó ese espacio.
 
-**Mi disco es un SSD.** En los SSD, Windows suele vaciar físicamente (TRIM) el
-contenido de lo borrado: quedan los nombres pero el contenido son ceros, y
-**ningún programa** puede recuperarlo. El programa lo detecta y no guarda
-archivos en blanco.
+**Mi disco es un SSD o NVMe.** En los SSD, Windows suele vaciar físicamente (TRIM)
+el contenido de lo borrado: quedan los nombres pero el contenido son ceros, y
+**ningún programa** puede recuperarlo. Haz la imagen cuanto antes; el explorador
+marcará como «En blanco» lo que ya no tiene contenido. Si lo que necesitas está
+en blanco, la única vía es otra copia: la nube del cliente (OneDrive guarda lo
+borrado 30 días en su papelera y tiene historial de versiones; con Microsoft 365
+permite «Restaurar OneDrive» a una fecha anterior), correos con adjuntos, memorias
+USB u otros equipos de la empresa.
 
 **La unidad está cifrada con BitLocker.** Elige la **letra de unidad** (`C:`)
 con la unidad desbloqueada, no el «Disco físico».
@@ -146,7 +192,8 @@ Con opciones, el programa trabaja por consola en vez de abrir la ventana. Abre
 una consola **como administrador**:
 
 ```
-recovery.exe -origen C: -destino E:\Recuperado -buscar "tesis, *.jpg"
+recovery.exe -origen disco1 -imagen E:\Imagenes
+recovery.exe -origen "E:\Imagenes\Imagen - disco1.img" -destino F:\Recuperado -buscar "tesis, *.jpg"
 recovery.exe -estado-disco
 recovery.exe -programas
 ```
@@ -155,6 +202,7 @@ recovery.exe -programas
 |--------|--------|
 | `-origen X` | `C:`, `disco0`, `\\.\PhysicalDrive0`, un archivo de imagen (`disco.img`) o en Linux `/dev/sdb1` |
 | `-destino DIR` | Carpeta de destino (en otra unidad) |
+| `-imagen CARPETA` | Crea (o continúa) una imagen del origen en esa carpeta |
 | `-buscar TEXTO` | Recupera solo lo que coincida (mismas reglas que el buscador) |
 | `-modo todo` | Incluye también archivos de Windows y de programas |
 | `-rapido` | Solo archivos borrados hace poco |
@@ -193,7 +241,7 @@ tipo que sean.
 - No puede recuperar lo físicamente sobrescrito ni lo vaciado por TRIM.
 - Los archivos sin nombre muy fragmentados salen incompletos (`Dudosos`) o no salen.
 - En unidades FAT32/exFAT solo funciona la búsqueda por contenido.
-- No descifra BitLocker ni EFS.
+- No descifra BitLocker ni EFS (hay que desbloquear la unidad antes).
 - La vista previa muestra fotos JPG, PNG y GIF y archivos de texto.
 - El estado de los discos usa la información de Windows (Windows 8 o posterior);
   en discos USB suele no estar disponible.

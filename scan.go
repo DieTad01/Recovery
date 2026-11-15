@@ -193,7 +193,9 @@ func (s *Scan) loadVolume(ci int) {
 	}
 	if string(sec[3:11]) == "-FVE-FS-" {
 		s.Notes = append(s.Notes, "La "+c.Desc+" está cifrada con BitLocker. Leída así solo se ven datos cifrados: "+
-			"para recuperar de ella hay que desbloquearla en Windows y escanearla por su letra de unidad (por ejemplo C:).")
+			"hay que desbloquearla en Windows (la clave de recuperación suele estar en la cuenta Microsoft del dueño, "+
+			"en account.microsoft.com/devices/recoverykey) y después analizar o hacer la imagen de su LETRA de unidad, "+
+			"no del disco físico.")
 		return
 	}
 	bi, ok := parseBoot(sec)

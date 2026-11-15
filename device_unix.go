@@ -130,3 +130,8 @@ func isDiskFull(err error) bool {
 }
 
 func destFSNote(string) string { return "" }
+
+// setSparse: en Linux los archivos ya son dispersos al no escribir los ceros.
+func setSparse(*os.File) {}
+
+func destIsFAT32(string) bool { return false }

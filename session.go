@@ -21,6 +21,7 @@ const (
 	stagePrepare = iota // leyendo el sistema de archivos actual
 	stageDeep           // análisis completo del disco
 	stageAnalyze        // reconstruyendo carpetas
+	stageVerify         // comprobando qué archivos conservan su contenido
 	stageCarve          // analizando archivos sin nombre
 	stageDone
 )
@@ -41,6 +42,7 @@ type SessionProgress struct {
 	ETA         time.Duration
 	Records     int // registros NTFS encontrados
 	Cands       int // candidatos por firma
+	Zeroed      int // archivos con el contenido en blanco
 	Interrupted bool
 }
 
@@ -57,6 +59,13 @@ type Session struct {
 	Entries []*Entry
 	Final   bool // ya terminó todo el análisis
 	Err     error
+
+	zcache map[zkey]bool // resultado de la comprobación de contenido
+}
+
+type zkey struct {
+	rec   *FileRec
+	delta int64
 }
 
 // NewSession abre la unidad (solo lectura).
@@ -91,6 +100,10 @@ func (ss *Session) Run(notify func(ev int, p SessionProgress)) {
 	ss.mu.Unlock()
 	ss.publish(nil)
 	notify(evResults, p)
+	if ss.verify(&p, notify) {
+		ss.publish(nil)
+		notify(evResults, p)
+	}
 
 	if !ss.Quick && !stopRequested() {
 		p.Stage = stageDeep
@@ -123,6 +136,10 @@ func (ss *Session) Run(notify func(ev int, p SessionProgress)) {
 		ss.mu.Unlock()
 		ss.publish(nil)
 		notify(evResults, p)
+		if ss.verify(&p, notify) {
+			ss.publish(nil)
+			notify(evResults, p)
+		}
 
 		// Archivos sin nombre (por su contenido).
 		if len(s.Cands) > 0 {
@@ -165,6 +182,91 @@ func (ss *Session) analyze() {
 	ss.Plan = s.BuildPlan(Filter{Todo: true})
 }
 
+// verify comprueba, leyendo unas muestras de cada archivo con nombre, si
+// su contenido sigue en el disco o está en blanco (lo que hacen los SSD
+// con TRIM, o «limpiar la unidad» al restablecer Windows). Devuelve true
+// si hubo cambios.
+func (ss *Session) verify(p *SessionProgress, notify func(int, SessionProgress)) bool {
+	if ss.zcache == nil {
+		ss.zcache = map[zkey]bool{}
+	}
+	ss.mu.RLock()
+	var todo []*Item
+	for _, it := range ss.Plan.Items {
+		r := it.Rec
+		if it.System || r.has(fResident) || r.has(fCompressed) || r.Size == 0 || it.Overw >= it.Total {
+			continue
+		}
+		todo = append(todo, it)
+	}
+	ss.mu.RUnlock()
+	if len(todo) > 400000 {
+		todo = todo[:400000]
+	}
+	sort.Slice(todo, func(i, j int) bool { return todo[i].Phys < todo[j].Phys })
+	p.Stage, p.Frac = stageVerify, 0
+	notify(evProgress, *p)
+	buf := make([]byte, 4096)
+	last := time.Now()
+	changed := false
+	zero := 0
+	for i, it := range todo {
+		if stopRequested() {
+			break
+		}
+		g := ss.Scan.geomFor(it.Rec)
+		k := zkey{it.Rec, g.Delta}
+		z, ok := ss.zcache[k]
+		if !ok {
+			z = ss.isZeroed(it.Rec, g, buf)
+			ss.zcache[k] = z
+		}
+		if it.Zeroed != z {
+			it.Zeroed = z
+			changed = true
+		}
+		if z {
+			zero++
+		}
+		if time.Since(last) > 250*time.Millisecond {
+			last = time.Now()
+			p.Frac = float64(i) / float64(len(todo))
+			p.Zeroed = zero
+			notify(evProgress, *p)
+		}
+	}
+	p.Zeroed = zero
+	return changed
+}
+
+// isZeroed lee 4 KB al principio, a la mitad y al final del archivo: si
+// las tres muestras están en blanco, el contenido ya no existe.
+func (ss *Session) isZeroed(r *FileRec, g Geometry, buf []byte) bool {
+	runs, _ := r.flatten()
+	samples := []int64{0, r.Size / 2, max64(0, r.Size-4096)}
+	read := 0
+	for _, lo := range samples {
+		lo -= lo % g.CS
+		var vcnOff int64
+		for _, ru := range runs {
+			l := ru.Len * g.CS
+			if lo >= vcnOff && lo < vcnOff+l {
+				if ru.LCN >= 0 {
+					off := g.Delta + ru.LCN*g.CS + (lo - vcnOff)
+					n, _ := ss.Dev.ReadAt(buf, off)
+					read++
+					if n > 0 && !allZero(buf[:n]) {
+						return false
+					}
+				}
+				break
+			}
+			vcnOff += l
+		}
+	}
+	return read > 0
+}
+
 // intactRuns devuelve las zonas ocupadas por archivos con nombre intactos,
 // para no listarlos otra vez como archivos sin nombre.
 func (ss *Session) intactRuns() []iv {
@@ -204,6 +306,9 @@ func (ss *Session) publish(carved []CarvedFile) {
 		if it.Overw > 0 {
 			e.State = esPartial
 			e.Why = strconv.FormatInt(it.Overw*100/max64(it.Total, 1), 10) + "% sobrescrito"
+		}
+		if it.Zeroed {
+			e.State, e.Why = esZeroed, "contenido en blanco"
 		}
 		list = append(list, e)
 	}
@@ -314,6 +419,7 @@ const (
 	esPartial            // parcialmente sobrescrito
 	esCarved             // sin nombre, completo
 	esCarvedDoubt        // sin nombre, quizá incompleto
+	esZeroed             // el contenido está en blanco (lo vació el disco)
 	esLost               // ya no se puede recuperar
 )
 
@@ -336,7 +442,7 @@ type Entry struct {
 	nodes   []*Node
 }
 
-func (e *Entry) Checkable() bool { return e.State != esLost }
+func (e *Entry) Checkable() bool { return e.State != esLost && e.State != esZeroed }
 
 // StateText describe el estado para la columna «Estado».
 func (e *Entry) StateText() string {
@@ -347,6 +453,8 @@ func (e *Entry) StateText() string {
 		return "Dañado en parte"
 	case esCarvedDoubt:
 		return "Puede estar incompleto"
+	case esZeroed:
+		return "En blanco"
 	}
 	return "No recuperable"
 }
@@ -362,6 +470,9 @@ func (e *Entry) StateDetail() string {
 		return "Dañado en parte: " + e.Why + " por archivos nuevos"
 	case esCarvedDoubt:
 		return "Puede estar incompleto: " + e.Why
+	case esZeroed:
+		return "En blanco: el disco ya vació su contenido (los SSD lo hacen con TRIM; también ocurre al " +
+			"«limpiar la unidad» al restablecer Windows). Ningún programa puede recuperarlo."
 	}
 	return "No recuperable: " + e.Why
 }

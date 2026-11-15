@@ -31,6 +31,11 @@ const (
 	idList
 	idHideSys
 	idRecover
+	idMakeImage
+	idOpenImage
+	idImgBack
+	idImgStop
+	idImgAnalyze
 )
 
 // Mensajes propios (los envían los procesos en segundo plano).
@@ -42,6 +47,8 @@ const (
 	wmAppRecProg
 	wmAppRecDone
 	wmAppTable
+	wmAppImgProg
+	wmAppImgDone
 )
 
 const (
@@ -52,12 +59,14 @@ const (
 const (
 	pageHome = iota
 	pageExplorer
+	pageImage
 )
 
 const (
 	busyNone = iota
 	busyScan
 	busyRecover
+	busyImage
 )
 
 // Colores (estilo Windows 11).
@@ -109,6 +118,7 @@ type appState struct {
 	drives               *vlist
 	hQuick, hHint, hScan syscall.Handle
 	hDisk, hProgs, hVer  syscall.Handle
+	hMakeImg, hOpenImg   syscall.Handle
 	sources              []Source
 
 	// Explorador
@@ -255,6 +265,7 @@ func runGUIApp(cfg *Config) int {
 	}
 	buildHome()
 	buildExplorer()
+	buildImagePage()
 	fillDrives()
 	showPage(pageHome)
 	pShowWindow.Call(hw, swShow)
@@ -313,7 +324,10 @@ func buildHome() {
 	a.hProgs = ctl("BUTTON", "Programas que más ocupan", wsVisible|wsTabstop, 0, idProgs, fBody)
 	a.hVer = ctl("STATIC", "Versión "+version, wsVisible|0x2, 0, 0, fBody) // SS_RIGHT
 	a.muted[a.hVer] = true
-	a.homeCtls = []syscall.Handle{a.hTitle, a.hSub, a.hSect, a.drives.hwnd, a.hQuick, a.hHint, a.hScan, a.hDisk, a.hProgs, a.hVer}
+	a.hMakeImg = ctl("BUTTON", "Crear imagen del disco…", wsVisible|wsTabstop, 0, idMakeImage, fBody)
+	a.hOpenImg = ctl("BUTTON", "Abrir imagen…", wsVisible|wsTabstop, 0, idOpenImage, fBody)
+	a.homeCtls = []syscall.Handle{a.hTitle, a.hSub, a.hSect, a.drives.hwnd, a.hQuick, a.hHint, a.hScan,
+		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg}
 }
 
 var sysLarge uintptr
@@ -429,6 +443,9 @@ func showPage(p int) {
 	for _, h := range app.expCtls {
 		show(h, p == pageExplorer)
 	}
+	for _, h := range img.ctls {
+		show(h, p == pageImage)
+	}
 	layout()
 	invalidate(app.hwnd)
 	if p == pageHome {
@@ -453,7 +470,13 @@ func layout() {
 		moveWin(a.hScan, W-m-sc(230), H-sc(148), sc(230), sc(50))
 		moveWin(a.hDisk, m, H-sc(58), sc(190), sc(32))
 		moveWin(a.hProgs, m+sc(200), H-sc(58), sc(230), sc(32))
-		moveWin(a.hVer, W-m-sc(200), H-sc(50), sc(200), sc(20))
+		moveWin(a.hOpenImg, W-m-sc(150), H-sc(58), sc(150), sc(32))
+		moveWin(a.hMakeImg, W-m-sc(150)-sc(10)-sc(210), H-sc(58), sc(210), sc(32))
+		moveWin(a.hVer, W-m-sc(200), sc(34), sc(200), sc(20))
+		return
+	}
+	if a.page == pageImage {
+		layoutImagePage(W, H)
 		return
 	}
 	busy := a.busy != busyNone
@@ -570,6 +593,13 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 	case wmAppTable:
 		tableUpdate(syscall.Handle(wp))
 		return 0
+	case wmAppImgProg:
+		atomic.StoreInt32(&app.progPnd, 0)
+		updateImageStats()
+		return 0
+	case wmAppImgDone:
+		imageDone()
+		return 0
 	case wmDpiChanged:
 		app.dpi = int(wp & 0xFFFF)
 		makeFonts()
@@ -585,8 +615,11 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 	case wmClose:
 		if app.busy != busyNone && !app.autotest {
 			what := "el análisis"
-			if app.busy == busyRecover {
+			switch app.busy {
+			case busyRecover:
 				what = "la recuperación"
+			case busyImage:
+				what = "la imagen del disco (podrás continuarla después)"
 			}
 			if msgBox(hwnd, "Todavía no ha terminado "+what+". ¿Salir de todos modos?", "Recovery",
 				mbYesNo|mbIconQuest|mbDefButton2) != idYes {
@@ -680,6 +713,23 @@ func onCommand(id, code int) {
 		rebuildTree()
 	case idRecover:
 		doRecover("")
+	case idMakeImage:
+		startImage("")
+	case idOpenImage:
+		openImageFile()
+	case idImgStop:
+		atomic.StoreInt32(&stopFlag, 1)
+		enable(img.hStop, false)
+		setText(img.hTitle, "Deteniendo la imagen…")
+	case idImgBack:
+		if app.busy == busyNone {
+			fillDrives()
+			showPage(pageHome)
+		}
+	case idImgAnalyze:
+		if img.job != nil {
+			analyzePath(img.job.ImgPath, "Imagen de "+img.srcName)
+		}
 	}
 }
 

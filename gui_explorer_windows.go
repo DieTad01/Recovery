@@ -81,13 +81,33 @@ func startScan() {
 		return
 	}
 	src := a.sources[row]
-	ss, err := NewSession(src.Path, isChecked(a.hQuick))
+	if isSSD(src) && !a.autotest {
+		q := ssdAdvice + "\n\nLo más seguro es pulsar «No» y usar «Crear imagen del disco…» primero; " +
+			"después se analiza la imagen.\n\n¿Analizar directamente la unidad de todos modos?"
+		if msgBox(a.hwnd, q, "Es un SSD", mbYesNo|mbIconWarning|mbDefButton2) != idYes {
+			return
+		}
+	}
+	analyzePath(src.Path, sourceName(src))
+}
+
+// analyzePath analiza una unidad o un archivo de imagen y abre el explorador.
+func analyzePath(path, name string) {
+	a := app
+	if a.busy != busyNone {
+		return
+	}
+	if a.ss != nil {
+		a.ss.Close()
+		a.ss = nil
+	}
+	ss, err := NewSession(path, isChecked(a.hQuick))
 	if err != nil {
-		msgBox(a.hwnd, "No se puede leer esa unidad:\n\n"+err.Error(), "Recovery", mbIconError)
+		msgBox(a.hwnd, "No se puede leer:\n\n"+err.Error(), "Recovery", mbIconError)
 		return
 	}
 	a.ss = ss
-	a.srcName = sourceName(src)
+	a.srcName = name
 	a.tree, a.cur, a.curPath, a.rows, a.search = nil, nil, "", nil, false
 	a.nodes = nil
 	sendMsg(a.hTree, tvmDeleteItem, 0, tviRoot)
@@ -180,6 +200,8 @@ func updateStatus() {
 		s = fmt.Sprintf("Analizando todo el disco: %.0f %% · faltan ~%s%s", p.Frac*100, humanDur(p.ETA), found)
 	case stageAnalyze:
 		s = "Reconstruyendo carpetas…" + found
+	case stageVerify:
+		s = fmt.Sprintf("Comprobando qué archivos conservan su contenido: %.0f %%%s", p.Frac*100, found)
 	case stageCarve:
 		s = fmt.Sprintf("Buscando archivos sin nombre (fotos, videos, documentos…): %.0f %%%s", p.Frac*100, found)
 	case stageDone:
@@ -187,6 +209,9 @@ func updateStatus() {
 		if p.Interrupted {
 			s = "Análisis detenido" + found
 		}
+	}
+	if p.Zeroed > 0 {
+		s += fmt.Sprintf(" · %s en blanco (el disco ya los vació)", groupDigits(int64(p.Zeroed)))
 	}
 	if a.busy == busyScan && p.Stage != stagePrepare && p.Stage != stageDone && n > 0 {
 		s += " · ya puedes explorar"
@@ -206,6 +231,10 @@ func scanDone() {
 	if n, _ := totalFound(); n == 0 && a.tree != nil && a.tree.Roots[rootLost].Count == 0 {
 		setText(a.hOverlay, "No se encontraron archivos en esta unidad.")
 		show(a.hOverlay, true)
+	}
+	// Avisos del análisis (por ejemplo, una partición cifrada con BitLocker).
+	if notes := a.ss.Scan.Notes; len(notes) > 0 && !a.autotest {
+		msgBox(a.hwnd, strings.Join(notes, "\n\n"), "Aviso", mbIconWarning)
 	}
 	if a.autotest {
 		autotestAfterScan()
@@ -725,6 +754,10 @@ func autotestStart() {
 		}
 	}
 	setChecked(app.hQuick, os.Getenv("RECOVERY_GUI_QUICK") != "")
+	if d := os.Getenv("RECOVERY_GUI_IMAGE"); d != "" {
+		startImage(d)
+		return
+	}
 	startScan()
 }
 

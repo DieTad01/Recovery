@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.0"
+const version = "2.1"
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {
@@ -32,6 +32,7 @@ type Config struct {
 	NewScan     bool
 	Exts        map[string]bool
 	Search      string
+	ImageDir    string
 	MinKB       int64
 	Interactive bool
 }
@@ -101,6 +102,8 @@ Uso:  recovery -origen <unidad|disco|imagen> -destino <carpeta en OTRA unidad> [
   -si              No pedir confirmaciones
   -consola         Usar la consola de texto en vez de la ventana (Windows)
   -buscar TEXTO    Recuperar solo lo que coincida: nombre o carpeta (tesis), comodines (*.jpg), varios con comas
+  -imagen CARPETA  Crea una imagen del origen en esa carpeta (tolera sectores dañados; si se
+                   interrumpe, al repetir la orden continúa). Luego: -origen CARPETA\imagen.img
   -estado-disco    Muestra el estado de salud de los discos y termina
   -programas       Muestra los programas instalados que más ocupan y termina (Windows)
   -listar          Muestra las unidades disponibles y termina
@@ -129,6 +132,7 @@ func main() {
 	flag.BoolVar(&pausa, "pausa", false, "")
 	flag.BoolVar(&consola, "consola", false, "")
 	flag.StringVar(&cfg.Search, "buscar", "", "")
+	flag.StringVar(&cfg.ImageDir, "imagen", "", "")
 	flag.BoolVar(&estadoDisco, "estado-disco", false, "")
 	flag.BoolVar(&programas, "programas", false, "")
 	flag.Usage = usage
@@ -154,6 +158,19 @@ func main() {
 			ask("Pulsa Intro para salir...")
 		}
 		return
+	}
+
+	if cfg.ImageDir != "" {
+		attachConsole()
+		code := 0
+		if err := runImage(&cfg); err != nil {
+			fmt.Println("\nERROR:", err)
+			code = 1
+		}
+		if pausa {
+			ask("Pulsa Intro para salir...")
+		}
+		os.Exit(code)
 	}
 
 	guiMode := runtime.GOOS == "windows" && !consola && !listar && cfg.Source == ""
@@ -632,4 +649,68 @@ func printPrograms() {
 		fmt.Printf("  %12s  %s   %s\n", r[1], r[0], r[2])
 	}
 	fmt.Println("\n  " + ProgramsSummary(ps))
+}
+
+// runImage crea (o continúa) la imagen del origen en la carpeta indicada.
+func runImage(cfg *Config) error {
+	if cfg.Source == "" {
+		return fmt.Errorf("falta la unidad de origen (-origen)")
+	}
+	src := normalizeSource(cfg.Source)
+	dir, err := filepath.Abs(cfg.ImageDir)
+	if err != nil {
+		return err
+	}
+	if fatal, _ := checkDestination(src, dir); fatal != "" {
+		return fmt.Errorf("%s", fatal)
+	}
+	if destIsFAT32(dir) {
+		return fmt.Errorf("el destino está en FAT32 (máximo 4 GB por archivo): usa NTFS o exFAT")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	dev, err := OpenDevice(src)
+	if err != nil {
+		return err
+	}
+	defer dev.Close()
+	name := src
+	if !isRawDevicePath(src) {
+		name = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+	}
+	base := imageBaseName(strings.Trim(strings.NewReplacer(`\\.\`, "", `/dev/`, "", `:`, "").Replace(name), `\/`))
+	job, err := NewImageJob(dev, dir, base)
+	if err != nil {
+		return err
+	}
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt)
+	go func() { <-sigc; atomic.StoreInt32(&stopFlag, 1) }()
+	fmt.Printf("Imagen de %s (%s)\n  -> %s\n", src, humanSize(dev.Size), job.ImgPath)
+	if job.Resumed {
+		done, _, _ := job.Totals()
+		if job.Complete() {
+			fmt.Println("La imagen ya estaba completa.")
+			return nil
+		}
+		fmt.Printf("Continuando la imagen anterior (%s ya copiados).\n", humanSize(done))
+	}
+	err = job.Run(func(p ImageProgress) {
+		statusLine(fmt.Sprintf("  %5.1f%%  %s de %s  ·  %s/s  ·  faltan ~%s  ·  ilegible: %s  ·  fase %d",
+			float64(p.Done)*100/float64(p.Size), humanSize(p.Done), humanSize(p.Size), humanSize(int64(p.Rate)),
+			humanDur(p.ETA), humanSize(p.Bad), p.Phase))
+	})
+	statusLine("")
+	if err != nil {
+		return err
+	}
+	done, bad, pend := job.Totals()
+	fmt.Printf("\nCopiado: %s · ilegible: %s · pendiente: %s\n", humanSize(done), humanSize(bad), humanSize(pend))
+	if pend > 0 {
+		fmt.Println("Imagen detenida: repite la misma orden para continuar.")
+	} else {
+		fmt.Printf("Imagen terminada. Para recuperar desde ella:\n  recovery -origen \"%s\" -destino <carpeta>\n", job.ImgPath)
+	}
+	return nil
 }

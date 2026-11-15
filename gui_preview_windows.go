@@ -136,6 +136,9 @@ func startPreview() {
 	case e.State == esLost:
 		setPreview(previewImage{ext: e.Ext, msg: "Este archivo ya no se puede recuperar."})
 		return
+	case e.State == esZeroed:
+		setPreview(previewImage{ext: e.Ext, msg: "Contenido en blanco: el disco ya vació este archivo, no queda nada que recuperar."})
+		return
 	case kind == pvNone:
 		setPreview(previewImage{ext: e.Ext, msg: "Sin vista previa para este tipo de archivo."})
 		return
