@@ -65,10 +65,11 @@ func buildExplorer() {
 	a.hHideSys = ctl("BUTTON", "Ocultar archivos de Windows y de programas", wsVisible|wsTabstop|bsAutoCheck, 0, idHideSys, fBody)
 	setChecked(a.hHideSys, true)
 	a.hSelInfo = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBody)
+	a.hSummary = ctl("BUTTON", "Ver resumen…", wsVisible|wsTabstop, 0, idSummary, fBody)
 	a.hRecov = ctl("BUTTON", "Recuperar", wsVisible|wsTabstop|bsOwnerDraw, 0, idRecover, fButton)
 
 	a.expCtls = []syscall.Handle{a.hBack, a.hSrc, a.hStatus, a.hSearch, a.hProgress, a.hStop, a.hTree,
-		a.hCrumb, a.list.hwnd, a.hOverlay, a.hCanvas, a.hPrevName, a.hPrevI, a.hHideSys, a.hSelInfo, a.hRecov}
+		a.hCrumb, a.list.hwnd, a.hOverlay, a.hCanvas, a.hPrevName, a.hPrevI, a.hHideSys, a.hSummary, a.hSelInfo, a.hRecov}
 }
 
 // ---------------------------------------------------------------- análisis
@@ -205,9 +206,15 @@ func updateStatus() {
 	case stageCarve:
 		s = fmt.Sprintf("Buscando archivos sin nombre (fotos, videos, documentos…): %.0f %%%s", p.Frac*100, found)
 	case stageDone:
-		s = "Análisis terminado" + found
+		head := "Análisis terminado"
 		if p.Interrupted {
-			s = "Análisis detenido" + found
+			head = "Análisis detenido"
+		}
+		s = head + found
+		if a.tree != nil {
+			if h := summarize(a.tree.Entries).Headline(); h != "" {
+				s = head + found + " · " + h
+			}
 		}
 	}
 	if p.Zeroed > 0 {
@@ -586,6 +593,32 @@ func cmp64(a, b int64) int {
 	return 0
 }
 
+// showSummary muestra el resumen con porcentajes de lo encontrado.
+func showSummary() {
+	if app.tree == nil {
+		return
+	}
+	sum := summarize(app.tree.Entries)
+	if sum.totalN() == 0 {
+		msgBox(app.hwnd, "Todavía no se ha encontrado nada que resumir.", "Resumen", mbIconInfo)
+		return
+	}
+	scope := "Archivos personales"
+	if !isChecked(app.hHideSys) {
+		scope = "Todos los archivos (incluidos Windows y programas)"
+	}
+	msgBox(app.hwnd, scope+":\r\n\r\n"+sum.Text(), "Resumen — "+app.srcName, mbIconInfo)
+}
+
+// writeSummaryFile guarda resumen.txt junto a lo recuperado.
+func writeSummaryFile(dir string) {
+	if app.tree == nil {
+		return
+	}
+	body := "RESUMEN DE LA RECUPERACIÓN\r\nOrigen: " + app.srcName + "\r\n\r\n" + summarize(app.tree.Entries).Text()
+	os.WriteFile(filepath.Join(dir, "resumen.txt"), []byte("\xEF\xBB\xBF"+body), 0o644)
+}
+
 func updateSelInfo() {
 	if app.tree == nil || app.tree.Checked == 0 {
 		setText(app.hSelInfo, "Marca las casillas de lo que quieres recuperar.")
@@ -698,6 +731,7 @@ func doRecover(dest string) {
 func recoverDone() {
 	a := app
 	a.busy = busyNone
+	writeSummaryFile(a.recDest)
 	atomic.StoreInt32(&stopFlag, 0)
 	enable(a.hBack, true)
 	enable(a.hRecov, true)
@@ -786,6 +820,9 @@ func autotestAfterScan() {
 		}
 		app.list.refresh()
 		updateSelInfo()
+	}
+	if os.Getenv("RECOVERY_GUI_SUMMARY") != "" {
+		showSummary()
 	}
 	if d := os.Getenv("RECOVERY_GUI_DST"); d != "" {
 		doRecover(filepath.Clean(d))

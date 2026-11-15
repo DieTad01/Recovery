@@ -102,6 +102,13 @@ sola vez** y recuperar desde la imagen todas las veces que haga falta.
 La casilla **«Ocultar archivos de Windows y de programas»** (marcada por
 defecto) deja solo los archivos personales; desmárcala para verlo todo.
 
+El botón **«Ver resumen…»** muestra, con porcentajes, cuántos archivos están en
+buen estado, dañados, en blanco o perdidos (y sus GB). Es la mejor forma de
+saber de antemano qué parte se puede salvar y de enseñárselo al cliente. Al
+recuperar, ese mismo resumen se guarda como `resumen.txt`.
+
+![Resumen con el porcentaje de éxito](docs/resumen.png)
+
 ### El buscador
 
 Escribe en la casilla de búsqueda:

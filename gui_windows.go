@@ -30,6 +30,7 @@ const (
 	idTree
 	idList
 	idHideSys
+	idSummary
 	idRecover
 	idMakeImage
 	idOpenImage
@@ -122,13 +123,13 @@ type appState struct {
 	sources              []Source
 
 	// Explorador
-	expCtls                    []syscall.Handle
-	hBack, hSrc, hStatus       syscall.Handle
-	hSearch, hProgress, hStop  syscall.Handle
-	hTree, hCrumb, hOverlay    syscall.Handle
-	list                       *vlist
-	hCanvas, hPrevName, hPrevI syscall.Handle
-	hHideSys, hSelInfo, hRecov syscall.Handle
+	expCtls                              []syscall.Handle
+	hBack, hSrc, hStatus                 syscall.Handle
+	hSearch, hProgress, hStop            syscall.Handle
+	hTree, hCrumb, hOverlay              syscall.Handle
+	list                                 *vlist
+	hCanvas, hPrevName, hPrevI           syscall.Handle
+	hHideSys, hSelInfo, hSummary, hRecov syscall.Handle
 
 	ss       *Session
 	srcName  string
@@ -517,7 +518,8 @@ func layout() {
 	moveWin(a.hPrevName, px, y0+sc(240), pw, sc(40))
 	moveWin(a.hPrevI, px, y0+sc(282), pw, yb-y0-sc(282)-sc(8))
 	moveWin(a.hHideSys, sc(16), yb+sc(20), sc(300), sc(24))
-	moveWin(a.hSelInfo, sc(330), yb+sc(22), W-sc(330)-sc(16)-sc(210), sc(22))
+	moveWin(a.hSummary, sc(324), yb+sc(14), sc(150), sc(34))
+	moveWin(a.hSelInfo, sc(484), yb+sc(22), W-sc(484)-sc(16)-sc(210), sc(22))
 	moveWin(a.hRecov, W-sc(16)-sc(190), yb+sc(10), sc(190), sc(44))
 	invalidate(a.hwnd)
 }
@@ -711,6 +713,8 @@ func onCommand(id, code int) {
 		}
 	case idHideSys:
 		rebuildTree()
+	case idSummary:
+		showSummary()
 	case idRecover:
 		doRecover("")
 	case idMakeImage:

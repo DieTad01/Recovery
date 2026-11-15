@@ -483,6 +483,10 @@ func run(cfg *Config) error {
 				say("     %-18s %10s archivos  %10s", c+":", groupDigits(cs.N), humanSize(cs.Size))
 			}
 		}
+		if n := plan.Intact + plan.Partial; n > 0 {
+			say("     en buen estado: %d%% de los archivos (%s completos, %s dañados en parte)",
+				plan.Intact*100/n, groupDigits(plan.Intact), groupDigits(plan.Partial))
+		}
 	}
 	if plan.NOverw > 0 {
 		say("  Sobrescritos por completo (irrecuperables): %s", groupDigits(plan.NOverw))
