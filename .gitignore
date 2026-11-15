@@ -1,0 +1,5 @@
+/recovery
+/recovery-linux
+*.img
+*.idx
+__pycache__/
