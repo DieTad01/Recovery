@@ -64,14 +64,13 @@ func buildImagePage() {
 	img.hTitle = ctl("STATIC", "Imagen del disco", 0, 0, 0, fTitle)
 	img.hSrc = ctl("STATIC", "", 0, 0, 0, fSub)
 	app.muted[img.hSrc] = true
-	img.hProg = ctl("msctls_progress32", "", 0, 0, 0, fBody)
-	sendMsg(img.hProg, pbmSetRange32, 0, 1000)
+	img.hProg = newBar(0)
 	img.hStats = ctl("STATIC", "", 0, 0, 0, fSub)
 	img.hNote = ctl("STATIC", "", 0x2000, 0, 0, fBody)
 	app.muted[img.hNote] = true
-	img.hBack = ctl("BUTTON", "‹  Inicio", wsTabstop, 0, idImgBack, fBody)
-	img.hStop = ctl("BUTTON", "Detener", wsTabstop, 0, idImgStop, fBody)
-	img.hAnalyz = ctl("BUTTON", "Analizar la imagen", wsTabstop|bsOwnerDraw, 0, idImgAnalyze, fButton)
+	img.hBack = button("‹  Inicio", wsTabstop, idImgBack, btnFrame, fBold)
+	img.hStop = button("Detener", wsTabstop, idImgStop, btnFrame, fBold)
+	img.hAnalyz = button("Analizar la imagen", wsTabstop, idImgAnalyze, btnFill, fButton)
 	img.ctls = []syscall.Handle{img.hTitle, img.hSrc, img.hProg, img.hStats, img.hNote, img.hBack, img.hStop, img.hAnalyz}
 }
 
@@ -79,12 +78,14 @@ func layoutImagePage(W, H int) {
 	m := sc(32)
 	moveWin(img.hTitle, m, sc(22), W-2*m, sc(40))
 	moveWin(img.hSrc, m, sc(66), W-2*m, sc(44))
-	moveWin(img.hProg, m, sc(124), W-2*m, sc(18))
-	moveWin(img.hStats, m, sc(156), W-2*m, sc(110))
-	moveWin(img.hNote, m, sc(276), W-2*m, H-sc(276)-sc(100))
-	moveWin(img.hBack, m, H-sc(70), sc(110), sc(36))
-	moveWin(img.hStop, m+sc(120), H-sc(70), sc(130), sc(36))
-	moveWin(img.hAnalyz, W-m-sc(240), H-sc(78), sc(240), sc(50))
+	// (raya en sc(120))
+	moveWin(img.hProg, m, sc(142), W-2*m, sc(22))
+	moveWin(img.hStats, m, sc(178), W-2*m, sc(110))
+	moveWin(img.hNote, m, sc(298), W-2*m, H-sc(298)-sc(100))
+	moveWin(img.hBack, m, H-sc(72), sc(116), sc(40))
+	moveWin(img.hStop, m+sc(128), H-sc(72), sc(130), sc(40))
+	moveWin(img.hAnalyz, W-m-sc(240), H-sc(80), sc(240), sc(52))
+	invalidate(app.hwnd)
 }
 
 // diskOfLetter busca el disco físico que contiene una unidad con letra.
@@ -268,7 +269,7 @@ func updateImageStats() {
 		lines = append(lines, "Fase: "+ph)
 	}
 	setText(img.hStats, strings.Join(lines, "\r\n"))
-	sendMsg(img.hProg, pbmSetPos, uintptr((p.Done+p.Bad)*1000/p.Size), 0)
+	setBar(img.hProg, int((p.Done+p.Bad)*1000/p.Size))
 }
 
 func imageDone() {

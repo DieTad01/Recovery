@@ -113,6 +113,7 @@ const (
 	wmCommand      = 0x0111
 	wmTimer        = 0x0113
 	wmCtlColorEdit = 0x0133
+	wmSetCursor    = 0x0020
 	wmCtlColorBtn  = 0x0135
 	wmCtlColorStat = 0x0138
 	wmDrawItem     = 0x002B
@@ -407,9 +408,22 @@ func show(h syscall.Handle, on bool) {
 	pShowWindow.Call(uintptr(h), v)
 }
 
-func isChecked(h syscall.Handle) bool { return sendMsg(h, bmGetCheck, 0, 0) == 1 }
+// ownerChecks guarda el estado de las casillas dibujadas por el programa.
+var ownerChecks = map[syscall.Handle]bool{}
+
+func isChecked(h syscall.Handle) bool {
+	if v, ok := ownerChecks[h]; ok {
+		return v
+	}
+	return sendMsg(h, bmGetCheck, 0, 0) == 1
+}
 
 func setChecked(h syscall.Handle, on bool) {
+	if _, ok := ownerChecks[h]; ok {
+		ownerChecks[h] = on
+		invalidate(h)
+		return
+	}
 	v := uintptr(0)
 	if on {
 		v = 1

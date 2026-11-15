@@ -38,6 +38,7 @@ const (
 	idImgBack
 	idImgStop
 	idImgAnalyze
+	idNight
 )
 
 // Mensajes propios (los envían los procesos en segundo plano).
@@ -74,18 +75,6 @@ const (
 	busyVerify
 )
 
-// Colores (estilo Windows 11).
-var (
-	cBg         = rgb(255, 255, 255)
-	cText       = rgb(28, 28, 28)
-	cMuted      = rgb(96, 96, 96)
-	cAccent     = rgb(0, 95, 184)
-	cAccentDown = rgb(0, 72, 140)
-	cAccentOff  = rgb(170, 196, 222)
-	cLine       = rgb(228, 228, 228)
-	cPanel      = rgb(246, 247, 249)
-)
-
 // Fuentes.
 const (
 	fBody = iota
@@ -101,21 +90,22 @@ var fontSpec = [nFonts]struct {
 	px     int
 	weight int
 }{
-	fBody: {12, 400}, fBold: {12, 600}, fTitle: {28, 600}, fSub: {14, 400},
-	fSection: {15, 600}, fButton: {14, 600},
+	fBody: {13, 400}, fBold: {13, 700}, fTitle: {30, 700}, fSub: {15, 400},
+	fSection: {16, 700}, fButton: {15, 700},
 }
 
 type appState struct {
-	hwnd    syscall.Handle
-	dpi     int
-	fonts   [nFonts]syscall.Handle
-	ctlFont map[syscall.Handle]int
-	muted   map[syscall.Handle]bool
-	brBg    syscall.Handle
-	brLine  syscall.Handle
-	brPanel syscall.Handle
-	page    int
-	busy    int
+	hwnd     syscall.Handle
+	dpi      int
+	fonts    [nFonts]syscall.Handle
+	ctlFont  map[syscall.Handle]int
+	muted    map[syscall.Handle]bool
+	brBg     syscall.Handle
+	brPanel  syscall.Handle // fondo hundido
+	brStrong syscall.Handle // líneas, marcos y botones
+	brOff    syscall.Handle // desactivado
+	page     int
+	busy     int
 
 	// Inicio
 	homeCtls             []syscall.Handle
@@ -123,6 +113,7 @@ type appState struct {
 	drives               *vlist
 	hQuick, hHint, hScan syscall.Handle
 	hDisk, hProgs, hVer  syscall.Handle
+	hNight               syscall.Handle
 	hMakeImg, hOpenImg   syscall.Handle
 	sources              []Source
 
@@ -179,7 +170,7 @@ func makeFonts() {
 		if app.fonts[i] != 0 {
 			pDeleteObject.Call(uintptr(app.fonts[i]))
 		}
-		app.fonts[i] = newFont(sc(f.px), f.weight, "Segoe UI")
+		app.fonts[i] = newFont(sc(f.px), f.weight, "Arial") // la letra de la marca (Helvetica / Arial)
 	}
 }
 
@@ -224,9 +215,7 @@ func runGUIApp(cfg *Config) int {
 		app.dpi = 96
 	}
 	makeFonts()
-	app.brBg = newBrush(cBg)
-	app.brLine = newBrush(cLine)
-	app.brPanel = newBrush(cPanel)
+	setPalette(savedNight())
 
 	cursor, _, _ := pLoadCursorW.Call(0, 32512)
 	iconBig, _, _ := pLoadImageW.Call(gInst, uintptr(unsafe.Pointer(wstr("APP"))), 1, 32, 32, 0)
@@ -235,12 +224,13 @@ func runGUIApp(cfg *Config) int {
 		cbSize: uint32(unsafe.Sizeof(wndclassex{})), style: 3,
 		lpfnWndProc: syscall.NewCallback(mainProc), hInstance: syscall.Handle(gInst),
 		hIcon: syscall.Handle(iconBig), hCursor: syscall.Handle(cursor),
-		hbrBackground: app.brBg, lpszClassName: wstr("RecoveryMain"), hIconSm: syscall.Handle(iconSm),
+		lpszClassName: wstr("RecoveryMain"), hIconSm: syscall.Handle(iconSm),
 	}
 	if r, _, _ := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
 		return 1
 	}
 	registerCanvasClass(syscall.Handle(cursor))
+	registerBarClass(syscall.Handle(cursor))
 	registerTableClass(syscall.Handle(cursor), syscall.Handle(iconBig), syscall.Handle(iconSm))
 
 	// Tamaño inicial: 1100×720 (ajustado a la pantalla).
@@ -258,12 +248,13 @@ func runGUIApp(cfg *Config) int {
 	x := int(work.left) + (int(work.right-work.left)-w)/2
 	y := int(work.top) + (int(work.bottom-work.top)-ht)/2
 	hw, _, _ := pCreateWindowExW.Call(wsExControlPar, uintptr(unsafe.Pointer(wstr("RecoveryMain"))),
-		uintptr(unsafe.Pointer(wstr("Recovery"))), wsOverlappedWin|wsClipChildren,
+		uintptr(unsafe.Pointer(wstr("Recovery · Delio"))), wsOverlappedWin|wsClipChildren,
 		uintptr(max(x, 0)), uintptr(max(y, 0)), uintptr(w), uintptr(ht), 0, 0, gInst, 0)
 	if hw == 0 {
 		return 1
 	}
 	app.hwnd = syscall.Handle(hw)
+	styleCaption(app.hwnd)
 	if pGetDpiForWindow.Find() == nil {
 		if wd, _, _ := pGetDpiForWindow.Call(hw); int(wd) != app.dpi && wd >= 96 {
 			app.dpi = int(wd)
@@ -273,6 +264,7 @@ func runGUIApp(cfg *Config) int {
 	buildHome()
 	buildExplorer()
 	buildImagePage()
+	applyTheme()
 	fillDrives()
 	showPage(pageHome)
 	pShowWindow.Call(hw, swShow)
@@ -321,20 +313,21 @@ func buildHome() {
 	a.drives.text = driveText
 	a.drives.image = driveImage
 	a.drives.onActivate = func(int) { startScan() }
-	a.hQuick = ctl("BUTTON", "Análisis rápido: solo lo borrado hace poco (tarda minutos). Desmárcalo si el equipo se formateó o restauró.",
-		wsVisible|wsTabstop|bsAutoCheck, 0, idQuick, fBody)
+	a.hQuick = button("Análisis rápido: solo lo borrado hace poco (tarda minutos). Desmárcalo si el equipo se formateó o restauró.",
+		wsVisible|wsTabstop, idQuick, btnCheck, fBody)
 	a.hHint = ctl("STATIC", "Consejo: guarda siempre lo recuperado en OTRO disco (externo o USB) y usa el equipo lo menos posible hasta terminar.",
 		wsVisible, 0, 0, fBody)
 	a.muted[a.hHint] = true
-	a.hScan = ctl("BUTTON", "Buscar archivos", wsVisible|wsTabstop|bsOwnerDraw, 0, idScan, fButton)
-	a.hDisk = ctl("BUTTON", "Estado de los discos", wsVisible|wsTabstop, 0, idDisk, fBody)
-	a.hProgs = ctl("BUTTON", "Programas que más ocupan", wsVisible|wsTabstop, 0, idProgs, fBody)
-	a.hVer = ctl("STATIC", "Versión "+version, wsVisible|0x2, 0, 0, fBody) // SS_RIGHT
+	a.hScan = button("Buscar archivos", wsVisible|wsTabstop, idScan, btnFill, fButton)
+	a.hDisk = button("Estado de los discos", wsVisible|wsTabstop, idDisk, btnLink, fBold)
+	a.hProgs = button("Programas que más ocupan", wsVisible|wsTabstop, idProgs, btnLink, fBold)
+	a.hVer = ctl("STATIC", "Recovery "+version+" · delioph.tech", wsVisible|0x2, 0, 0, fBody) // SS_RIGHT
 	a.muted[a.hVer] = true
-	a.hMakeImg = ctl("BUTTON", "Crear imagen del disco…", wsVisible|wsTabstop, 0, idMakeImage, fBody)
-	a.hOpenImg = ctl("BUTTON", "Abrir imagen…", wsVisible|wsTabstop, 0, idOpenImage, fBody)
+	a.hMakeImg = button("Crear imagen del disco…", wsVisible|wsTabstop, idMakeImage, btnFrame, fBold)
+	a.hOpenImg = button("Abrir imagen…", wsVisible|wsTabstop, idOpenImage, btnFrame, fBold)
+	a.hNight = button("Noche", wsVisible|wsTabstop, idNight, btnFrame, fBold)
 	a.homeCtls = []syscall.Handle{a.hTitle, a.hSub, a.hSect, a.drives.hwnd, a.hQuick, a.hHint, a.hScan,
-		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg}
+		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg, a.hNight}
 }
 
 var sysLarge uintptr
@@ -468,18 +461,24 @@ func layout() {
 	}
 	if a.page == pageHome {
 		m := sc(32)
-		moveWin(a.hTitle, m, sc(22), W-2*m, sc(40))
-		moveWin(a.hSub, m, sc(64), W-2*m, sc(22))
-		moveWin(a.hSect, m, sc(104), W-2*m, sc(24))
-		moveWin(a.drives.hwnd, m, sc(132), W-2*m, H-sc(132)-sc(160))
-		moveWin(a.hQuick, m, H-sc(146), W-2*m-sc(250), sc(22))
-		moveWin(a.hHint, m, H-sc(118), W-2*m-sc(250), sc(40))
-		moveWin(a.hScan, W-m-sc(230), H-sc(148), sc(230), sc(50))
-		moveWin(a.hDisk, m, H-sc(58), sc(190), sc(32))
-		moveWin(a.hProgs, m+sc(200), H-sc(58), sc(230), sc(32))
-		moveWin(a.hOpenImg, W-m-sc(150), H-sc(58), sc(150), sc(32))
-		moveWin(a.hMakeImg, W-m-sc(150)-sc(10)-sc(210), H-sc(58), sc(210), sc(32))
-		moveWin(a.hVer, W-m-sc(200), sc(34), sc(200), sc(20))
+		// Cabecera: logotipo Delio | Recovery, y a la derecha el menú.
+		lx := m + logoWidth(sc(homeLogoH)) + sc(36)
+		moveWin(a.hTitle, lx, sc(26), sc(260), sc(40))
+		moveWin(a.hProgs, W-m-sc(214), sc(28), sc(214), sc(36))
+		moveWin(a.hDisk, W-m-sc(214)-sc(14)-sc(170), sc(28), sc(170), sc(36))
+		moveWin(a.hSub, m, sc(86), W-2*m, sc(22))
+		// (la onda se dibuja entre sc(118) y sc(158))
+		moveWin(a.hSect, m, sc(170), W-2*m, sc(24))
+		moveFramed(a.hwnd, a.drives.hwnd, m, sc(200), W-2*m, H-sc(200)-sc(170))
+		moveWin(a.hQuick, m, H-sc(152), W-2*m-sc(270), sc(24))
+		moveWin(a.hHint, m, H-sc(120), W-2*m-sc(270), sc(40))
+		moveWin(a.hScan, W-m-sc(240), H-sc(154), sc(240), sc(52))
+		moveWin(a.hMakeImg, m, H-sc(62), sc(220), sc(40))
+		moveWin(a.hOpenImg, m+sc(232), H-sc(62), sc(160), sc(40))
+		moveWin(a.hNight, W-m-sc(96), H-sc(62), sc(96), sc(40))
+		moveWin(a.hVer, W-m-sc(96)-sc(16)-sc(260), H-sc(52), sc(260), sc(20))
+		fitLastColumn(a.drives)
+		invalidate(a.hwnd)
 		return
 	}
 	if a.page == pageImage {
@@ -487,14 +486,14 @@ func layout() {
 		return
 	}
 	busy := a.busy != busyNone
-	moveWin(a.hBack, sc(16), sc(16), sc(96), sc(32))
+	moveWin(a.hBack, sc(16), sc(16), sc(96), sc(36))
 	moveWin(a.hSrc, sc(126), sc(10), W-sc(126)-sc(340), sc(24))
 	moveWin(a.hStatus, sc(126), sc(36), W-sc(126)-sc(340), sc(20))
-	moveWin(a.hSearch, W-sc(16)-sc(300), sc(18), sc(300), sc(28))
+	moveField(a.hwnd, a.hSearch, W-sc(16)-sc(300), sc(16), sc(300), sc(36))
 	y0 := sc(72)
 	if busy {
-		moveWin(a.hProgress, sc(16), sc(76), W-sc(32)-sc(130), sc(14))
-		moveWin(a.hStop, W-sc(16)-sc(120), sc(68), sc(120), sc(30))
+		moveWin(a.hProgress, sc(16), sc(76), W-sc(32)-sc(130), sc(16))
+		moveWin(a.hStop, W-sc(16)-sc(120), sc(68), sc(120), sc(32))
 		y0 = sc(108)
 	}
 	show(a.hProgress, busy && a.page == pageExplorer)
@@ -508,9 +507,9 @@ func layout() {
 	px := W - sc(16) - pw
 	lx := sc(16) + treeW + sc(10)
 	lw := px - sc(10) - lx
-	moveWin(a.hTree, sc(16), y0, treeW, yb-y0-sc(8))
+	moveFramed(a.hwnd, a.hTree, sc(16), y0, treeW, yb-y0-sc(8))
 	moveWin(a.hCrumb, lx, y0, lw, sc(22))
-	moveWin(a.list.hwnd, lx, y0+sc(26), lw, yb-y0-sc(26)-sc(8))
+	moveFramed(a.hwnd, a.list.hwnd, lx, y0+sc(26), lw, yb-y0-sc(26)-sc(8))
 	// La columna «Nombre» ocupa lo que queda para que se vean nombre,
 	// tamaño, fecha y estado sin desplazarse.
 	nameW := lw - sc(80+118+140) - sc(28)
@@ -520,14 +519,14 @@ func layout() {
 	a.list.cols[0].width = nameW * 96 / a.dpi
 	a.list.rescale()
 	moveWin(a.hOverlay, lx+sc(20), y0+sc(90), lw-sc(40), sc(60))
-	moveWin(a.hCanvas, px, y0, pw, sc(230))
+	moveFramed(a.hwnd, a.hCanvas, px, y0, pw, sc(230))
 	moveWin(a.hPrevName, px, y0+sc(240), pw, sc(40))
 	moveWin(a.hPrevI, px, y0+sc(282), pw, yb-y0-sc(282)-sc(8))
-	moveWin(a.hHideSys, sc(16), yb+sc(20), sc(300), sc(24))
-	moveWin(a.hSummary, sc(324), yb+sc(14), sc(140), sc(34))
-	moveWin(a.hVerify, sc(472), yb+sc(14), sc(150), sc(34))
-	moveWin(a.hSelInfo, sc(632), yb+sc(22), W-sc(632)-sc(16)-sc(210), sc(22))
-	moveWin(a.hRecov, W-sc(16)-sc(190), yb+sc(10), sc(190), sc(44))
+	moveWin(a.hHideSys, sc(16), yb+sc(20), sc(316), sc(24))
+	moveWin(a.hSummary, sc(340), yb+sc(14), sc(136), sc(36))
+	moveWin(a.hVerify, sc(486), yb+sc(14), sc(160), sc(36))
+	moveWin(a.hSelInfo, sc(658), yb+sc(22), W-sc(658)-sc(16)-sc(214), sc(22))
+	moveWin(a.hRecov, W-sc(16)-sc(196), yb+sc(10), sc(196), sc(46))
 	invalidate(a.hwnd)
 }
 
@@ -542,9 +541,17 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 		wrI32(lp, 24, int32(sc(880)))
 		wrI32(lp, 28, int32(sc(580)))
 		return 0
+	case wmEraseBkgnd:
+		w, h := clientSize(hwnd)
+		fillR(wp, rect{0, 0, int32(w), int32(h)}, app.brBg)
+		return 1
 	case wmPaint:
 		paintMain(hwnd)
 		return 0
+	case wmSetCursor:
+		if onSetCursor(wp) {
+			return 1
+		}
 	case wmCtlColorStat:
 		hdc := wp
 		if app.muted[syscall.Handle(lp)] {
@@ -552,8 +559,16 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 		} else {
 			pSetTextColor.Call(hdc, uintptr(cText))
 		}
+		if syscall.Handle(lp) == app.hOverlay {
+			pSetBkColor.Call(hdc, uintptr(cPanel)) // va encima de la lista
+			return uintptr(app.brPanel)
+		}
 		pSetBkColor.Call(hdc, uintptr(cBg))
 		return uintptr(app.brBg)
+	case wmCtlColorEdit:
+		pSetTextColor.Call(wp, uintptr(cText))
+		pSetBkColor.Call(wp, uintptr(cPanel))
+		return uintptr(app.brPanel)
 	case wmDrawItem:
 		drawButton(lp)
 		return 1
@@ -562,11 +577,26 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 			return r
 		}
 		if syscall.Handle(rdPtr(lp, 0)) == app.hTree {
+			if rdU32(lp, 16) == nmCustomDraw {
+				return treeCustomDraw(lp)
+			}
 			treeNotify(lp)
 		}
 		return 0
 	case wmCommand:
-		onCommand(int(wp&0xFFFF), int(wp>>16&0xFFFF))
+		code := int(wp >> 16 & 0xFFFF)
+		if kind, ok := btnKind[syscall.Handle(lp)]; ok && lp != 0 {
+			if kind == btnCheck && (code == 0 || code == 5) { // BN_CLICKED / BN_DOUBLECLICKED
+				h := syscall.Handle(lp)
+				ownerChecks[h] = !ownerChecks[h]
+				invalidate(h)
+				code = 0
+			}
+			if code != 0 {
+				return 0 // los botones actúan una sola vez aunque se haga doble clic
+			}
+		}
+		onCommand(int(wp&0xFFFF), code)
 		return 0
 	case wmTimer:
 		pKillTimer.Call(uintptr(hwnd), wp)
@@ -653,58 +683,37 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 	return r
 }
 
-// paintMain dibuja las líneas que separan las zonas del explorador.
+const homeLogoH = 46 // alto del logotipo en la pantalla de inicio (96 ppp)
+
+// paintMain dibuja lo que no son controles: el logotipo, la onda, las
+// líneas que separan las zonas y los marcos de listas y campos.
 func paintMain(hwnd syscall.Handle) {
 	var ps paintstruct
 	hdc, _, _ := pBeginPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
-	if app.page == pageExplorer {
-		W, H := clientSize(hwnd)
+	W, H := clientSize(hwnd)
+	t := int32(lw())
+	switch app.page {
+	case pageHome:
+		m := sc(32)
+		lh := sc(homeLogoH)
+		drawLogo(hdc, m, sc(22), lh)
+		// Raya vertical entre «Delio» y «Recovery».
+		x := int32(m + logoWidth(lh) + sc(17))
+		fillR(hdc, rect{x, int32(sc(26)), x + t, int32(sc(22) + lh)}, app.brStrong)
+		drawWave(hdc, 0, W, sc(138), sc(18))
+	case pageExplorer:
 		y := sc(64)
 		if app.busy != busyNone {
 			y = sc(104)
 		}
 		for _, yy := range []int{y, H - sc(64)} {
-			r := rect{0, int32(yy), int32(W), int32(yy + 1)}
-			pFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), uintptr(app.brLine))
+			fillR(hdc, rect{0, int32(yy), int32(W), int32(yy) + t}, app.brStrong)
 		}
+	case pageImage:
+		fillR(hdc, rect{0, int32(sc(120)), int32(W), int32(sc(120)) + t}, app.brStrong)
 	}
+	paintBoxes(hdc, hwnd)
 	pEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
-}
-
-var btnBrush = map[uint32]syscall.Handle{}
-var btnPen = map[uint32]syscall.Handle{}
-
-// drawButton dibuja los botones principales (azules, esquinas redondeadas).
-func drawButton(lp uintptr) {
-	hwnd := syscall.Handle(rdPtr(lp, 24))
-	hdc := rdPtr(lp, 32)
-	state := rdU32(lp, 16)
-	r := rect{rdI32(lp, 40), rdI32(lp, 44), rdI32(lp, 48), rdI32(lp, 52)}
-	pFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), uintptr(app.brBg))
-	c := cAccent
-	switch {
-	case state&4 != 0: // ODS_DISABLED
-		c = cAccentOff
-	case state&1 != 0: // ODS_SELECTED
-		c = cAccentDown
-	}
-	if btnBrush[c] == 0 {
-		btnBrush[c] = newBrush(c)
-		p, _, _ := pCreatePen.Call(0, 1, uintptr(c))
-		btnPen[c] = syscall.Handle(p)
-	}
-	ob, _, _ := pSelectObject.Call(hdc, uintptr(btnBrush[c]))
-	op, _, _ := pSelectObject.Call(hdc, uintptr(btnPen[c]))
-	rad := uintptr(sc(10))
-	pRoundRect.Call(hdc, uintptr(r.left), uintptr(r.top), uintptr(r.right), uintptr(r.bottom), rad, rad)
-	pSelectObject.Call(hdc, ob)
-	pSelectObject.Call(hdc, op)
-	pSetBkMode.Call(hdc, 1)
-	pSetTextColor.Call(hdc, uintptr(rgb(255, 255, 255)))
-	of, _, _ := pSelectObject.Call(hdc, uintptr(app.fonts[fButton]))
-	pDrawTextW.Call(hdc, uintptr(unsafe.Pointer(wstr(getText(hwnd)))), ^uintptr(0),
-		uintptr(unsafe.Pointer(&r)), 0x1|0x4|0x20) // CENTER|VCENTER|SINGLELINE
-	pSelectObject.Call(hdc, of)
 }
 
 func onCommand(id, code int) {
@@ -727,6 +736,8 @@ func onCommand(id, code int) {
 		}
 	case idHideSys:
 		rebuildTree()
+	case idNight:
+		toggleNight()
 	case idSummary:
 		showSummary()
 	case idVerify:

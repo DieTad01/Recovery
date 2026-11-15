@@ -29,6 +29,7 @@ type vlist struct {
 	onSort     func(col int)
 	onActivate func(row int)
 	onSelect   func(row int) // -1 = nada seleccionado
+	states     uintptr       // casillas con el estilo de la marca
 }
 
 var gLists = map[syscall.Handle]*vlist{}
@@ -38,7 +39,7 @@ func newVList(parent syscall.Handle, id int, cols []vcol, checkboxes bool, img u
 	if single {
 		style |= lvsSingleSel
 	}
-	h, _, _ := pCreateWindowExW.Call(wsExClientEdge,
+	h, _, _ := pCreateWindowExW.Call(0, // sin borde 3D: el marco lo dibuja la ventana
 		uintptr(unsafe.Pointer(wstr("SysListView32"))), 0, style,
 		0, 0, 100, 100, uintptr(parent), uintptr(id), gInst, 0)
 	l := &vlist{hwnd: syscall.Handle(h), cols: cols, checkboxes: checkboxes}
@@ -53,7 +54,6 @@ func newVList(parent syscall.Handle, id int, cols []vcol, checkboxes bool, img u
 	if img != 0 {
 		sendMsg(l.hwnd, lvmSetImageList, lvsilSmall, img)
 	}
-	setTheme(l.hwnd, "Explorer")
 	for i, c := range cols {
 		lc := lvcolumn{mask: lvcfFmt | lvcfWidth | lvcfText, cx: int32(sc(c.width)), pszText: wstr(c.title)}
 		if c.right {
@@ -62,7 +62,20 @@ func newVList(parent syscall.Handle, id int, cols []vcol, checkboxes bool, img u
 		sendMsg(l.hwnd, lvmInsertColumnW, uintptr(i), uintptr(unsafe.Pointer(&lc)))
 	}
 	gLists[l.hwnd] = l
+	sendMsg(l.hwnd, wmSetFont, uintptr(app.fonts[fBody]), 0)
+	if hd := syscall.Handle(sendMsg(l.hwnd, 0x101F, 0, 0)); hd != 0 { // LVM_GETHEADER
+		gHeaders[hd] = l
+		subclassHeader(hd)
+	}
+	l.applyColors()
 	return l
+}
+
+// fitLastColumn estira la última columna hasta el borde de la lista.
+func fitLastColumn(l *vlist) {
+	if len(l.cols) > 0 {
+		sendMsg(l.hwnd, 0x101E, uintptr(len(l.cols)-1), ^uintptr(1)) // LVM_SETCOLUMNWIDTH, LVSCW_AUTOSIZE_USEHEADER (-2)
+	}
 }
 
 // rescale ajusta los anchos de columna tras un cambio de ppp.
@@ -126,12 +139,14 @@ func copyText(dst uintptr, max int32, s string) {
 // handleListNotify atiende las notificaciones de cualquier lista virtual.
 func handleListNotify(lp uintptr) (bool, uintptr) {
 	from := syscall.Handle(rdPtr(lp, 0))
+	code := rdU32(lp, 16)
 	l := gLists[from]
 	if l == nil {
 		return false, 0
 	}
-	code := rdU32(lp, 16)
 	switch code {
+	case nmCustomDraw:
+		return true, listCustomDraw(l, lp)
 	case lvnGetDispInfoW:
 		it := lp + 24
 		mask := rdU32(it, 0)

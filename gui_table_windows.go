@@ -39,7 +39,7 @@ func registerTableClass(cursor, iconBig, iconSm syscall.Handle) {
 	wc := wndclassex{
 		cbSize: uint32(unsafe.Sizeof(wndclassex{})), style: 3,
 		lpfnWndProc: syscall.NewCallback(tableProc), hInstance: syscall.Handle(gInst),
-		hIcon: iconBig, hCursor: cursor, hbrBackground: app.brBg,
+		hIcon: iconBig, hCursor: cursor,
 		lpszClassName: wstr("RecoveryTable"), hIconSm: iconSm,
 	}
 	pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
@@ -55,6 +55,7 @@ func newTableWindow(title string, cols []vcol, numeric []bool, w, h int) *tableW
 		uintptr(app.hwnd), 0, gInst, 0)
 	t.hwnd = syscall.Handle(hw)
 	gTables[t.hwnd] = t
+	styleCaption(t.hwnd)
 	t.list = newVList(t.hwnd, 1, cols, false, 0, false)
 	sendMsg(t.list.hwnd, wmSetFont, uintptr(app.fonts[fBody]), 0)
 	t.list.text = func(row, col int) string {
@@ -71,7 +72,9 @@ func newTableWindow(title string, cols []vcol, numeric []bool, w, h int) *tableW
 		return syscall.Handle(h)
 	}
 	t.hFoot = mk("STATIC", "Cargando…", 0x2000, 0, fBody)
-	t.hClose = mk("BUTTON", "Cerrar", wsTabstop, idTableClose, fBody)
+	t.hClose = mk("BUTTON", "Cerrar", wsTabstop|bsOwnerDraw, idTableClose, fBold)
+	btnKind[t.hClose] = btnFrame
+	app.ctlFont[t.hClose] = fBold
 	t.layout()
 	pShowWindow.Call(hw, swShow)
 	return t
@@ -80,9 +83,11 @@ func newTableWindow(title string, cols []vcol, numeric []bool, w, h int) *tableW
 func (t *tableWin) layout() {
 	W, H := clientSize(t.hwnd)
 	m := sc(14)
-	moveWin(t.list.hwnd, m, m, W-2*m, H-2*m-sc(76))
-	moveWin(t.hFoot, m, H-m-sc(66), W-2*m-sc(120), sc(66))
-	moveWin(t.hClose, W-m-sc(100), H-m-sc(34), sc(100), sc(32))
+	moveFramed(t.hwnd, t.list.hwnd, m, m, W-2*m, H-2*m-sc(80))
+	moveWin(t.hFoot, m, H-m-sc(66), W-2*m-sc(124), sc(66))
+	moveWin(t.hClose, W-m-sc(104), H-m-sc(38), sc(104), sc(38))
+	fitLastColumn(t.list)
+	invalidate(t.hwnd)
 }
 
 // post entrega datos desde cualquier hilo; rows == nil solo cambia el pie.
@@ -181,6 +186,23 @@ func tableProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 		wrI32(lp, 24, int32(sc(600)))
 		wrI32(lp, 28, int32(sc(360)))
 		return 0
+	case wmEraseBkgnd:
+		w, h := clientSize(hwnd)
+		fillR(wp, rect{0, 0, int32(w), int32(h)}, app.brBg)
+		return 1
+	case wmPaint:
+		var ps paintstruct
+		hdc, _, _ := pBeginPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
+		paintBoxes(hdc, hwnd)
+		pEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
+		return 0
+	case wmSetCursor:
+		if onSetCursor(wp) {
+			return 1
+		}
+	case wmDrawItem:
+		drawButton(lp)
+		return 1
 	case wmCtlColorStat:
 		pSetTextColor.Call(wp, uintptr(cText))
 		pSetBkColor.Call(wp, uintptr(cBg))
@@ -191,13 +213,18 @@ func tableProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 		}
 		return 0
 	case wmCommand:
-		if int(wp&0xFFFF) == idTableClose {
+		if int(wp&0xFFFF) == idTableClose && wp>>16&0xFFFF == 0 {
 			pDestroyWindow.Call(uintptr(hwnd))
 		}
 		return 0
 	case wmDestroy:
 		if t != nil {
 			delete(gLists, t.list.hwnd)
+			delete(boxes, t.list.hwnd)
+			delete(btnKind, t.hClose)
+			if btnHot == t.hClose {
+				btnHot = 0
+			}
 		}
 		delete(gTables, hwnd)
 		return 0

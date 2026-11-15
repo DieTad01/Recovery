@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.2"
+const version = "2.3"
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {

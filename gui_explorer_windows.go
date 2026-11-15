@@ -22,24 +22,22 @@ type lrow struct {
 
 func buildExplorer() {
 	a := app
-	a.hBack = ctl("BUTTON", "‹  Inicio", wsVisible|wsTabstop, 0, idBack, fBody)
+	a.hBack = button("‹  Inicio", wsVisible|wsTabstop, idBack, btnFrame, fBold)
 	a.hSrc = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fSection)
 	a.hStatus = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBody)
 	a.muted[a.hStatus] = true
-	a.hSearch = ctl("EDIT", "", wsVisible|wsTabstop|wsBorder|esAutoHScrol, 0, idSearch, fBody)
+	a.hSearch = ctl("EDIT", "", wsVisible|wsTabstop|esAutoHScrol, 0, idSearch, fBody)
 	sendMsg(a.hSearch, emSetCueBanner, 1, uintptr(unsafe.Pointer(wstr("Buscar archivos o carpetas (ej.: tesis, *.jpg)"))))
-	a.hProgress = ctl("msctls_progress32", "", wsVisible, 0, 0, fBody)
-	sendMsg(a.hProgress, pbmSetRange32, 0, 1000)
-	a.hStop = ctl("BUTTON", "Detener", wsVisible|wsTabstop, 0, idStop, fBody)
+	a.hProgress = newBar(wsVisible)
+	a.hStop = button("Detener", wsVisible|wsTabstop, idStop, btnFrame, fBold)
 
-	th, _, _ := pCreateWindowExW.Call(wsExClientEdge, uintptr(unsafe.Pointer(wstr("SysTreeView32"))), 0,
+	th, _, _ := pCreateWindowExW.Call(0, uintptr(unsafe.Pointer(wstr("SysTreeView32"))), 0,
 		wsChild|wsVisible|wsTabstop|tvsHasButtons|tvsLinesAtRoot|tvsShowSelAlways|tvsFullRowSelect,
 		0, 0, 10, 10, uintptr(a.hwnd), idTree, gInst, 0)
 	a.hTree = syscall.Handle(th)
 	a.ctlFont[a.hTree] = fBody
 	sendMsg(a.hTree, wmSetFont, uintptr(a.fonts[fBody]), 0)
 	sendMsg(a.hTree, tvmSetImageList, 0, sysSmallList())
-	setTheme(a.hTree, "Explorer")
 
 	a.hCrumb = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBold)
 	a.list = newVList(a.hwnd, idList, []vcol{
@@ -62,12 +60,12 @@ func buildExplorer() {
 	a.hPrevI = ctl("STATIC", "", wsVisible|0x2000, 0, 0, fBody)
 	a.muted[a.hPrevI] = true
 
-	a.hHideSys = ctl("BUTTON", "Ocultar archivos de Windows y de programas", wsVisible|wsTabstop|bsAutoCheck, 0, idHideSys, fBody)
+	a.hHideSys = button("Ocultar archivos de Windows y de programas", wsVisible|wsTabstop, idHideSys, btnCheck, fBody)
 	setChecked(a.hHideSys, true)
 	a.hSelInfo = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBody)
-	a.hSummary = ctl("BUTTON", "Ver resumen…", wsVisible|wsTabstop, 0, idSummary, fBody)
-	a.hVerify = ctl("BUTTON", "Verificar a fondo…", wsVisible|wsTabstop, 0, idVerify, fBody)
-	a.hRecov = ctl("BUTTON", "Recuperar", wsVisible|wsTabstop|bsOwnerDraw, 0, idRecover, fButton)
+	a.hSummary = button("Ver resumen…", wsVisible|wsTabstop, idSummary, btnFrame, fBold)
+	a.hVerify = button("Verificar a fondo…", wsVisible|wsTabstop, idVerify, btnFrame, fBold)
+	a.hRecov = button("Recuperar", wsVisible|wsTabstop, idRecover, btnFill, fButton)
 
 	a.expCtls = []syscall.Handle{a.hBack, a.hSrc, a.hStatus, a.hSearch, a.hProgress, a.hStop, a.hTree,
 		a.hCrumb, a.list.hwnd, a.hOverlay, a.hCanvas, a.hPrevName, a.hPrevI, a.hHideSys, a.hSummary, a.hVerify, a.hSelInfo, a.hRecov}
@@ -183,7 +181,7 @@ func updateStatus() {
 		setText(a.hStatus, fmt.Sprintf("Recuperando: %s de %s archivos · %s guardados",
 			groupDigits(int64(rp.done)), groupDigits(int64(rp.total)), humanSize(rp.bytes)))
 		if rp.total > 0 {
-			sendMsg(a.hProgress, pbmSetPos, uintptr(rp.done*1000/rp.total), 0)
+			setBar(a.hProgress, rp.done*1000/rp.total)
 		}
 		return
 	}
@@ -194,7 +192,7 @@ func updateStatus() {
 		setText(a.hStatus, fmt.Sprintf("Verificando a fondo: %s de %s archivos · %s leídos",
 			groupDigits(int64(rp.done)), groupDigits(int64(rp.total)), humanSize(rp.bytes)))
 		if rp.total > 0 {
-			sendMsg(a.hProgress, pbmSetPos, uintptr(rp.done*1000/rp.total), 0)
+			setBar(a.hProgress, rp.done*1000/rp.total)
 		}
 		return
 	}
@@ -240,7 +238,7 @@ func updateStatus() {
 		s += " · ya puedes explorar"
 	}
 	setText(a.hStatus, s)
-	sendMsg(a.hProgress, pbmSetPos, uintptr(p.Frac*1000), 0)
+	setBar(a.hProgress, int(p.Frac*1000))
 }
 
 func scanDone() {

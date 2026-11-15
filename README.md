@@ -1,4 +1,4 @@
-# Recovery 2 — recuperador de archivos con explorador
+# Recovery 2 — recuperador de archivos con explorador · Delio
 
 Programa para **recuperar archivos de un equipo con Windows que fue restaurado,
 formateado o del que se borraron archivos**, con un explorador para **ver lo
@@ -15,6 +15,8 @@ encontrado antes de recuperarlo**, como los programas comerciales:
   trabajar sobre la copia y no sobre el disco del cliente (imprescindible en SSD/NVMe).
 - Incluye dos herramientas: **estado de los discos** y **programas que más ocupan**.
 - **Solo lee** el disco afectado. Nunca escribe en él.
+- Con la imagen de **Delio** ([delioph.tech](https://delioph.tech)): los
+  mismos colores, letra, botones y onda que la página, y un **modo noche**.
 
 Es un único archivo (`recovery.exe`), no se instala y no necesita nada más.
 
@@ -79,6 +81,11 @@ sola vez** y recuperar desde la imagen todas las veces que haga falta.
      restauró: así se analiza el disco entero (puede tardar horas).
 
    ![Pantalla de inicio](docs/inicio.png)
+
+   El botón **Noche** (abajo a la derecha) cambia a los colores invertidos,
+   como en la página; la elección se recuerda para la próxima vez.
+
+   ![Modo noche](docs/explorador_noche.png)
 
 3. Los archivos **van apareciendo mientras se analiza**: ya puedes explorarlos.
    Pulsa **Detener** cuando quieras para quedarte con lo encontrado.
@@ -319,7 +326,11 @@ Pasado por más de 100 000 archivos reales sanos, no marcó ninguno como dañado
 
 Hace falta [Go](https://go.dev/dl/) 1.21 o posterior. No tiene dependencias.
 El icono y el manifiesto de Windows están en `rsrc_windows_amd64.syso`
-(generado desde `winres/icon.png` con `go-winres`).
+(generado desde `winres/icon.png`, el símbolo de Delio, con `go-winres`). El
+logotipo que se ve en la pantalla de inicio está en `marca/` (sale de los
+logos del repositorio de la página). Los colores de la marca están al
+principio de `gui_theme_windows.go`, igual que en `css/base.css` de la página:
+para cambiar el aspecto de todo el programa basta con tocarlos ahí.
 
 ```
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o recovery.exe .
