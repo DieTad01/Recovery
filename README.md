@@ -14,11 +14,15 @@ encontrado antes de recuperarlo**, como los programas comerciales:
 - **Crea una imagen del disco** tolerante a sectores dañados y reanudable, para
   trabajar sobre la copia y no sobre el disco del cliente (imprescindible en SSD/NVMe).
 - Incluye dos herramientas: **estado de los discos** y **programas que más ocupan**.
+- Y una aplicación aparte, el **Reparador** (`reparador.exe`): revisa lo
+  recuperado, **arregla los archivos dañados** (Excel, Word, PowerPoint, PDF…)
+  con todo lo que se puede salvar y **busca copias sanas** de ellos en otras
+  carpetas. Ver [Reparador](#reparador-arreglar-archivos-dañados).
 - **Solo lee** el disco afectado. Nunca escribe en él.
 - Con la imagen de **Delio** ([delioph.tech](https://delioph.tech)): los
   mismos colores, letra, botones y onda que la página, y un **modo noche**.
 
-Es un único archivo (`recovery.exe`), no se instala y no necesita nada más.
+Son dos archivos (`recovery.exe` y `reparador.exe`), no se instalan y no necesitan nada más.
 
 ![El explorador de resultados](docs/explorador.png)
 
@@ -228,12 +232,86 @@ Dentro de la carpeta que elijas se crean:
 | `Por_firma` | Archivos sin nombre, por tipo (las fotos y videos se nombran con su fecha cuando la tienen) |
 | `Dudosos` | Archivos dañados en parte o incompletos: puede que no abran |
 
+Para intentar arreglar los de `Dudosos` (y cualquier otro dañado), usa el
+**Reparador**.
+
+## Reparador: arreglar archivos dañados
+
+`reparador.exe` (o el botón **Reparar archivos dañados…** de la pantalla de
+inicio de Recovery) revisa una carpeta entera —normalmente la de lo
+recuperado—, comprueba cada archivo, **arregla los dañados con todo lo que se
+puede salvar** y **busca copias sanas** de ellos en otras carpetas. Nunca
+modifica los originales: todo lo que crea va a una carpeta aparte
+(`Reparados`), junto con un informe.
+
+1. **Archivos a revisar**: la carpeta con lo recuperado (o cualquier carpeta).
+2. **Buscar copias sanas en** (opcional): respaldos, memorias USB, otro equipo…
+3. **Guardar resultados en**: por defecto, `Reparados` dentro de la revisada.
+4. **Revisar y reparar**. La lista muestra cada archivo dañado y qué se
+   consiguió; doble clic abre lo reparado.
+
+![El Reparador](docs/reparador.png)
+
+Por cada archivo dañado puede crear:
+
+| Archivo creado | Qué es |
+|----------------|--------|
+| `… (reparado).xlsx/.docx/.pptx/.pdf/.txt` | El mismo documento rehecho con todo lo que se salvó. Las imágenes perdidas quedan como un recuadro gris |
+| `… (datos rescatados).xlsx` | Solo los valores de las hojas, en un Excel nuevo y sencillo que abre siempre (también de los `.xls` antiguos) |
+| `… (texto rescatado).txt` | El texto de un Word o de las diapositivas (también de `.doc` y `.ppt` antiguos) |
+| `… (vista previa).jpg` | La imagen que la cámara o el teléfono guardó dentro de la foto (sobrevive aunque la foto principal se haya perdido) |
+| `… (copia sana).ext` | El mismo documento, entero, encontrado en otro sitio |
+
+**Qué hace con cada tipo:**
+
+- **Excel, Word y PowerPoint (xlsx, docx, pptx)**: por dentro son un paquete de
+  piezas, cada una con su suma de control. Se conservan las piezas sanas; de la
+  dañada, todo lo que hay antes del daño (las filas, los párrafos); y se rehace
+  lo imprescindible que se haya perdido (la lista de hojas, los estilos, el
+  índice de piezas, las relaciones). Si el daño cae en ceros (SSD) o en datos
+  ajenos, se corta justo antes para no «inventar» contenido, y cada fila de
+  Excel se comprueba (número de fila y celdas coherentes).
+- **PDF**: se buscan todos los objetos sanos —también los guardados dentro de
+  otros— y se rehace el índice y, si hace falta, la lista de páginas. Un PDF al
+  que le falta el final (lo más común) no abre en ningún visor; reparado se ven
+  todas las páginas que sobreviven.
+- **Excel 97-2003 (.xls)**: sus celdas no van comprimidas, así que **se lee
+  también lo que hay después del daño** (se retoma en el siguiente registro sano).
+- **Word y PowerPoint 97-2003 (.doc, .ppt)**: se rescata el texto; los tramos que
+  son datos ajenos se quitan y se marcan con «[… aquí falta un trozo …]».
+- **Fotos JPG**: se rescata la vista previa incrustada.
+- **Texto (txt, csv, xml…)**: se quitan los trozos que ya no son texto.
+
+**Copias sanas.** Muchas veces el mismo documento existe entero en otro sitio:
+una versión anterior que quedó en el espacio libre (Recovery la encuentra en
+`Por_firma`, sin nombre), un respaldo, una memoria USB. El Reparador lo
+reconoce, de más a menos seguro: copia idéntica; el mismo documento (Office
+guarda dentro la fecha y hora exactas en que se creó, los PDF un identificador
+y las fotos la fecha y la cámara) **y** con el mismo contenido propio; el mismo
+contenido; o solo el mismo nombre (entonces dice que hay que revisarla). Como
+«Guardar como» copia el identificador interno —la factura de este mes hecha a
+partir de la del mes pasado—, nunca se fía solo de él: exige que coincidan
+también los textos o valores propios del documento, sin contar los de plantilla
+(encabezados que se repiten en muchos archivos).
+
+**Lo que no se puede arreglar**: lo que se sobrescribió ya no existe. En un
+documento comprimido (xlsx, docx) se pierde lo que va **después** del daño
+dentro de la misma pieza: el resto de esa hoja o del texto (se intentó retomar
+la lectura tras el daño, pero casi todo lo que sigue son repeticiones de datos
+anteriores, que se perdieron con él: el ~90 % sale desconocido, así que no se
+usa para no inventar datos). Lo «En blanco» no tiene nada que reparar: solo
+sirve una copia (por eso conviene indicar respaldos en el paso 2).
+
+Por línea de órdenes: `reparador.exe -reparar CARPETA [-destino DIR] [-copias-en "D:\Respaldo;E:\"]`
+(o `recovery.exe` con las mismas opciones).
+
 ## Preguntas frecuentes
 
 **¿Por qué aparece un archivo pero sale «dañado» o «no recuperable»?** El nombre
 y el contenido se guardan en sitios distintos del disco. Tras una restauración
 suele sobrevivir la «ficha» del archivo pero no su contenido, si el Windows nuevo
-reutilizó ese espacio.
+reutilizó ese espacio. Recupera también los dañados y pásalos por el
+**Reparador**: rescata lo que queda y busca copias sanas.
 
 **Mi disco es un SSD o NVMe.** En los SSD, Windows suele vaciar físicamente (TRIM)
 el contenido de lo borrado: quedan los nombres pero el contenido son ceros, y
@@ -275,6 +353,8 @@ recovery.exe -programas
 | `-destino DIR` | Carpeta de destino (en otra unidad) |
 | `-imagen CARPETA` | Crea (o continúa) una imagen del origen en esa carpeta |
 | `-buscar TEXTO` | Recupera solo lo que coincida (mismas reglas que el buscador) |
+| `-reparar CARPETA` | Revisa esa carpeta, repara los dañados y busca copias sanas (resultados en `-destino`, por defecto `CARPETA\Reparados`) |
+| `-copias-en DIRS` | Con `-reparar`: otras carpetas donde buscar copias sanas, separadas por `;` |
 | `-carpeta NOMBRE` | Recupera solo esa carpeta entera, con sus subcarpetas, esté donde esté (`Empresa`, `"Contabilidad 2024"`, `Contab*`, `Documents/Empresa`). Antes de recuperar muestra dónde la encontró y cuánto queda de cada una; con `-solo-listar` solo lo muestra |
 | `-modo todo` | Incluye también archivos de Windows y de programas |
 | `-rapido` | Solo archivos borrados hace poco |
@@ -343,9 +423,44 @@ probaron de ese tipo):
 Pasado por más de 100 000 archivos reales sanos, no marcó ninguno como dañado
 (0 falsas alarmas).
 
+### Reparador
+
+Se dañaron a propósito archivos reales de cuatro formas, como quedan tras una
+recuperación (4–16 KB ajenos en medio; el último 30 % perdido; 8 KB en blanco
+como deja un SSD; los primeros 4 KB perdidos), se repararon y el resultado se
+abrió con **programas independientes** (LibreOffice, openpyxl, python-docx,
+python-pptx, poppler). «Conservado» es la parte de los textos o valores del
+original que está en el resultado; «inventados», los que salen y no estaban:
+
+| Tipo | Dañados | Con algo rescatado | Abren | Conservado (medio) | Inventados |
+|------|---------|--------------------|-------|--------------------|-----------|
+| Word (.docx) | 48 | 33 | 33 de 33 | 90 % | 0 |
+| PowerPoint (.pptx) | 32 | 27 | 27 de 27 | 72 % | 0 |
+| Excel (.xlsx) | 44 | 32 | 32 de 32 | 49 % | 0 |
+| PDF | 52 | 51 | 51 de 51 | 77 % del texto cuando falta el final (sin reparar no abre: 0 %) | 0 |
+| Excel 97 (.xls) | 52 | 52 | 52 de 52 | 64–87 % | 0 |
+| Word 97 (.doc) | 40 | 40 | 40 de 40 | 72–100 % | 0 |
+| PowerPoint 97 (.ppt) | 32 | 32 | 32 de 32 | 99–100 % | 0 |
+
+Los que no tienen nada rescatado son documentos pequeños cuyo contenido
+estaba entero en la zona dañada (sobre todo al perder los primeros 4 KB).
+Los libros de Excel de la prueba tienen una sola hoja grande y el daño cae
+siempre dentro de ella: se salva lo que hay antes del daño. En un libro con
+varias hojas, las que no se tocaron salen enteras. En los PDF con la zona en
+blanco sobre sus fuentes (todas las páginas usan la misma), las páginas salen
+pero sin texto legible. Los primeros cálculos sacaban texto falso al final de
+un Word cuando el daño eran ceros (el descompresor los interpreta); se corrigió
+cortando antes de cualquier racha de ceros y comprobando la coherencia de cada
+fila de Excel, y ahora no sale ni un valor que no estuviera en el original.
+
+Para repetir la medición: `REP_SRC=carpeta REP_DST=salida REP_EXT="docx xlsx pptx"
+go test -run TestRepairMeasure .` y luego `pruebas/reparador_office.py`,
+`reparador_pdf.py` o `reparador_antiguos.py`.
+
 ## Limitaciones
 
-- No puede recuperar lo físicamente sobrescrito ni lo vaciado por TRIM.
+- No puede recuperar lo físicamente sobrescrito ni lo vaciado por TRIM (el
+  Reparador salva lo que queda alrededor y busca otras copias).
 - Los archivos sin nombre muy fragmentados salen incompletos (`Dudosos`) o no salen.
 - En unidades FAT32/exFAT solo funciona la búsqueda por contenido.
 - No descifra BitLocker ni EFS (hay que desbloquear la unidad antes).
@@ -368,8 +483,12 @@ para cambiar el aspecto de todo el programa basta con tocarlos ahí.
 
 ```
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o recovery.exe .
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.appMode=reparar" -o reparador.exe .
 go test ./...
 ```
+
+`reparador.exe` es el mismo programa compilado para abrir directamente el
+Reparador (comparten el motor de comprobación del contenido).
 
 Pruebas de extremo a extremo (Linux, como root; requieren `ntfs-3g`, `ffmpeg`,
 ImageMagick, `7z`, `rar` y Pillow):

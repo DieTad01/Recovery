@@ -942,6 +942,10 @@ func recoverDone() {
 	if res.Stopped {
 		msg += "\n\nLa recuperación se detuvo antes de terminar."
 	}
+	if res.Doubt > 0 {
+		msg += "\n\nPara intentar arreglar los dañados (o buscar copias sanas de ellos), usa " +
+			"«Reparar archivos dañados…» en la pantalla de inicio."
+	}
 	if a.autotest {
 		if os.Getenv("RECOVERY_GUI_KEEP") == "" {
 			pPostQuitMessage.Call(0)

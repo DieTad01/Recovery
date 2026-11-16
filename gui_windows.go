@@ -41,6 +41,18 @@ const (
 	idNight
 	idSegFiles
 	idSegFolders
+	idHomeRepair
+	idRepSrc
+	idRepSrcEdit
+	idRepIn
+	idRepInEdit
+	idRepOut
+	idRepOutEdit
+	idRepRun
+	idRepStop
+	idRepOpen
+	idRepBack
+	idRepList
 )
 
 // Mensajes propios (los envían los procesos en segundo plano).
@@ -56,6 +68,8 @@ const (
 	wmAppImgDone
 	wmAppVerProg
 	wmAppVerDone
+	wmAppRepProg
+	wmAppRepDone
 )
 
 const (
@@ -67,6 +81,7 @@ const (
 	pageHome = iota
 	pageExplorer
 	pageImage
+	pageRepair
 )
 
 const (
@@ -75,6 +90,7 @@ const (
 	busyRecover
 	busyImage
 	busyVerify
+	busyRepair
 )
 
 // Fuentes.
@@ -115,7 +131,7 @@ type appState struct {
 	drives               *vlist
 	hQuick, hHint, hScan syscall.Handle
 	hDisk, hProgs, hVer  syscall.Handle
-	hNight               syscall.Handle
+	hNight, hRepair      syscall.Handle
 	hMakeImg, hOpenImg   syscall.Handle
 	sources              []Source
 
@@ -271,17 +287,23 @@ func runGUIApp(cfg *Config) int {
 	buildHome()
 	buildExplorer()
 	buildImagePage()
+	buildRepairPage()
 	applyTheme()
 	fillDrives()
-	showPage(pageHome)
+	if appMode == "reparar" {
+		setText(app.hwnd, "Reparador · Delio")
+		showPage(pageRepair)
+	} else {
+		showPage(pageHome)
+	}
 	pShowWindow.Call(hw, swShow)
 	pUpdateWindow.Call(hw)
-	if !isAdmin() && !app.autotest {
+	if !isAdmin() && !app.autotest && appMode != "reparar" {
 		msgBox(app.hwnd, "El programa no tiene permisos de administrador, así que no podrá leer las unidades.\n\n"+
 			"Ciérralo, haz clic derecho sobre recovery.exe y elige «Ejecutar como administrador».",
 			"Recovery", mbIconWarning)
 	}
-	if app.autotest {
+	if app.autotest && !autotestRepair() {
 		autotestStart()
 	}
 
@@ -333,8 +355,9 @@ func buildHome() {
 	a.hMakeImg = button("Crear imagen del disco…", wsVisible|wsTabstop, idMakeImage, btnFrame, fBold)
 	a.hOpenImg = button("Abrir imagen…", wsVisible|wsTabstop, idOpenImage, btnFrame, fBold)
 	a.hNight = button("Noche", wsVisible|wsTabstop, idNight, btnFrame, fBold)
+	a.hRepair = button("Reparar archivos dañados…", wsVisible|wsTabstop, idHomeRepair, btnFrame, fBold)
 	a.homeCtls = []syscall.Handle{a.hTitle, a.hSub, a.hSect, a.drives.hwnd, a.hQuick, a.hHint, a.hScan,
-		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg, a.hNight}
+		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg, a.hNight, a.hRepair}
 }
 
 var sysLarge uintptr
@@ -453,6 +476,9 @@ func showPage(p int) {
 	for _, h := range img.ctls {
 		show(h, p == pageImage)
 	}
+	for _, h := range rep.ctls {
+		show(h, p == pageRepair)
+	}
 	layout()
 	invalidate(app.hwnd)
 	if p == pageHome {
@@ -482,14 +508,20 @@ func layout() {
 		moveWin(a.hScan, W-m-sc(240), H-sc(154), sc(240), sc(52))
 		moveWin(a.hMakeImg, m, H-sc(62), sc(220), sc(40))
 		moveWin(a.hOpenImg, m+sc(232), H-sc(62), sc(160), sc(40))
+		moveWin(a.hRepair, m+sc(404), H-sc(62), sc(240), sc(40))
 		moveWin(a.hNight, W-m-sc(96), H-sc(62), sc(96), sc(40))
 		moveWin(a.hVer, W-m-sc(96)-sc(16)-sc(260), H-sc(52), sc(260), sc(20))
+		show(a.hVer, W >= sc(1060))
 		fitLastColumn(a.drives)
 		invalidate(a.hwnd)
 		return
 	}
 	if a.page == pageImage {
 		layoutImagePage(W, H)
+		return
+	}
+	if a.page == pageRepair {
+		layoutRepairPage(W, H)
 		return
 	}
 	busy := a.busy != busyNone
@@ -678,6 +710,12 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 	case wmAppVerDone:
 		verifyDone()
 		return 0
+	case wmAppRepProg:
+		repairProgress()
+		return 0
+	case wmAppRepDone:
+		repairDone()
+		return 0
 	case wmDpiChanged:
 		app.dpi = int(wp & 0xFFFF)
 		makeFonts()
@@ -698,6 +736,8 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 				what = "la recuperación"
 			case busyImage:
 				what = "la imagen del disco (podrás continuarla después)"
+			case busyRepair:
+				what = "la revisión de archivos"
 			}
 			if msgBox(hwnd, "Todavía no ha terminado "+what+". ¿Salir de todos modos?", "Recovery",
 				mbYesNo|mbIconQuest|mbDefButton2) != idYes {
@@ -743,6 +783,13 @@ func paintMain(hwnd syscall.Handle) {
 		}
 	case pageImage:
 		fillR(hdc, rect{0, int32(sc(120)), int32(W), int32(sc(120)) + t}, app.brStrong)
+	case pageRepair:
+		m := sc(32)
+		lh := sc(repLogoH)
+		drawLogo(hdc, m, sc(14), lh)
+		x := int32(m + logoWidth(lh) + sc(14))
+		fillR(hdc, rect{x, int32(sc(16)), x + t, int32(sc(14) + lh)}, app.brStrong)
+		fillR(hdc, rect{0, int32(sc(98)), int32(W), int32(sc(98)) + t}, app.brStrong)
 	}
 	paintBoxes(hdc, hwnd)
 	pEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
@@ -793,6 +840,14 @@ func onCommand(id, code int) {
 			fillDrives()
 			showPage(pageHome)
 		}
+	case idHomeRepair:
+		if strings.TrimSpace(getText(rep.hSrc)) == "" && app.recDest != "" {
+			setText(rep.hSrc, app.recDest) // lo último que se recuperó
+			repSuggestOut()
+		}
+		showPage(pageRepair)
+	case idRepSrc, idRepSrcEdit, idRepIn, idRepOut, idRepRun, idRepStop, idRepOpen, idRepBack:
+		repairCommand(id, code)
 	case idImgAnalyze:
 		if img.job != nil {
 			analyzePath(img.job.ImgPath, "Imagen de "+img.srcName)

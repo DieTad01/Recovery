@@ -16,7 +16,11 @@ import (
 	"time"
 )
 
-const version = "2.4"
+const version = "2.5"
+
+// appMode se fija al compilar: "reparar" para reparador.exe (abre
+// directamente el Reparador). Ver «Compilar» en el README.
+var appMode = ""
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {
@@ -33,6 +37,8 @@ type Config struct {
 	Exts        map[string]bool
 	Search      string
 	Folder      string
+	Repair      string // carpeta a revisar y reparar
+	RepairIn    string // otras carpetas donde buscar copias sanas («;» entre ellas)
 	ImageDir    string
 	MinKB       int64
 	Interactive bool
@@ -108,6 +114,9 @@ Uso:  recovery -origen <unidad|disco|imagen> -destino <carpeta en OTRA unidad> [
                    Con -solo-listar muestra dónde está y cuánto se puede recuperar de ella
   -imagen CARPETA  Crea una imagen del origen en esa carpeta (tolera sectores dañados; si se
                    interrumpe, al repetir la orden continúa). Luego: -origen CARPETA\imagen.img
+  -reparar CARPETA Revisa los archivos de esa carpeta (p. ej. lo ya recuperado), repara los dañados y
+                   busca copias sanas. Resultados en -destino (por defecto CARPETA\Reparados)
+  -copias-en DIRS  Con -reparar: otras carpetas donde buscar copias sanas, separadas por «;»
   -estado-disco    Muestra el estado de salud de los discos y termina
   -programas       Muestra los programas instalados que más ocupan y termina (Windows)
   -listar          Muestra las unidades disponibles y termina
@@ -137,6 +146,8 @@ func main() {
 	flag.BoolVar(&consola, "consola", false, "")
 	flag.StringVar(&cfg.Search, "buscar", "", "")
 	flag.StringVar(&cfg.Folder, "carpeta", "", "")
+	flag.StringVar(&cfg.Repair, "reparar", "", "")
+	flag.StringVar(&cfg.RepairIn, "copias-en", "", "")
 	flag.StringVar(&cfg.ImageDir, "imagen", "", "")
 	flag.BoolVar(&estadoDisco, "estado-disco", false, "")
 	flag.BoolVar(&programas, "programas", false, "")
@@ -172,6 +183,15 @@ func main() {
 			fmt.Println("\nERROR:", err)
 			code = 1
 		}
+		if pausa {
+			ask("Pulsa Intro para salir...")
+		}
+		os.Exit(code)
+	}
+
+	if cfg.Repair != "" {
+		attachConsole()
+		code := runRepairCLI(&cfg)
 		if pausa {
 			ask("Pulsa Intro para salir...")
 		}
@@ -785,4 +805,54 @@ func printFolders(plan *Plan, m *Matcher) {
 		}
 		say("         %s", line)
 	}
+}
+
+// runRepairCLI revisa y repara una carpeta desde la consola.
+func runRepairCLI(cfg *Config) int {
+	job := RepairJob{Src: cfg.Repair, Out: cfg.Out}
+	if job.Out == "" {
+		job.Out = filepath.Join(cfg.Repair, "Reparados")
+		if st, err := os.Stat(cfg.Repair); err == nil && !st.IsDir() {
+			job.Out = filepath.Join(filepath.Dir(cfg.Repair), "Reparados")
+		}
+	}
+	for _, d := range strings.Split(cfg.RepairIn, ";") {
+		if d = strings.TrimSpace(d); d != "" {
+			job.SearchIn = append(job.SearchIn, d)
+		}
+	}
+	fmt.Printf("Recovery %s - Reparador\n\n", version)
+	last := time.Time{}
+	rows, sum, err := RunRepair(job, func(p RepairProgress) {
+		if time.Since(last) < 200*time.Millisecond && p.Phase != "Terminado" {
+			return
+		}
+		last = time.Now()
+		if p.Total > 0 {
+			statusLine(fmt.Sprintf("  %s: %d de %d  %s", p.Phase, p.Done, p.Total, shorten(p.Current, 50)))
+		} else {
+			statusLine("  " + p.Phase)
+		}
+	}, stopRequested)
+	statusLine("")
+	if err != nil {
+		fmt.Println("ERROR:", err)
+		return 1
+	}
+	for _, r := range rows {
+		if r.State == rsDamaged || r.State == rsBlank {
+			fmt.Printf("  %-9s %s\n            %s\n", r.StateText(), r.Rel, r.Action)
+		}
+	}
+	fmt.Println()
+	fmt.Print(strings.ReplaceAll(sum.Text(job), "\r\n", "\n"))
+	return 0
+}
+
+func shorten(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return "…" + string(r[len(r)-n+1:])
 }
