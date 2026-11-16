@@ -131,7 +131,8 @@ dañado va a la carpeta `Dudosos`.
 
 ### El buscador
 
-Escribe en la casilla de búsqueda:
+Junto a la casilla de búsqueda eliges qué buscar: **Archivos** (por defecto) o
+**Carpetas**. Para archivos, escribe en la casilla:
 
 | Ejemplo | Encuentra |
 |---------|-----------|
@@ -143,6 +144,37 @@ Escribe en la casilla de búsqueda:
 No distingue mayúsculas ni acentos («mama» encuentra «Mamá»).
 
 ![Resultados de una búsqueda](docs/busqueda.png)
+
+### Buscar una carpeta en concreto
+
+Cuando lo que importa es **una carpeta entera** (la de la empresa, la
+contabilidad, un proyecto), pulsa **Carpetas** y escribe su nombre: `Empresa`,
+`Contabilidad 2024`, `Contab*` o un trozo de ruta como `Documents\Empresa`
+(varias, separadas por comas; sin distinguir mayúsculas ni acentos).
+
+- La lista muestra **cada carpeta que coincide, esté donde esté**: con su
+  ubicación original, en «Carpetas sin ubicación» (si se perdió la carpeta de
+  encima) o entre los no recuperables. Primero las que se llaman exactamente así,
+  luego las que empiezan así y luego las que lo contienen; entre iguales, la que
+  más archivos tiene. Si hay varias copias, compara la **ubicación**, el número
+  de archivos y la fecha de **Modificado** (la del archivo más reciente que
+  contiene).
+- Al elegir una, el panel de la derecha dice **cuánto se puede recuperar de
+  ella**: archivos, tamaño, subcarpetas, último cambio, porcentaje sin señales de
+  daño y cuántos archivos suyos están dañados, en blanco o ya no se pueden
+  recuperar.
+- **Marca su casilla** para recuperarla entera, con todas sus subcarpetas, o haz
+  doble clic para abrirla. «Verificar a fondo» comprueba lo marcado.
+- Si la carpeta **perdió su nombre** (tras reinstalar, Windows puede reutilizar
+  la ficha de la carpeta y sus archivos aparecen en «carpeta_123»), escribe el
+  nombre de algún archivo que tenía dentro: después de las carpetas que se
+  llaman así aparecen **las carpetas que contienen archivos con ese nombre**,
+  ordenadas por cuántos tienen. También sirve buscar el archivo en «Archivos» y
+  hacer **doble clic**: se abre la carpeta donde está.
+- Al recuperar, `resumen.txt` incluye un informe de cada carpeta recuperada
+  entera, útil para entregárselo al cliente.
+
+![Buscar una carpeta en concreto](docs/buscar_carpeta.png)
 
 ### Estado de cada archivo
 
@@ -232,6 +264,7 @@ una consola **como administrador**:
 ```
 recovery.exe -origen disco1 -imagen E:\Imagenes
 recovery.exe -origen "E:\Imagenes\Imagen - disco1.img" -destino F:\Recuperado -buscar "tesis, *.jpg"
+recovery.exe -origen "E:\Imagenes\Imagen - disco1.img" -destino F:\Recuperado -carpeta "Empresa" -solo-listar
 recovery.exe -estado-disco
 recovery.exe -programas
 ```
@@ -242,6 +275,7 @@ recovery.exe -programas
 | `-destino DIR` | Carpeta de destino (en otra unidad) |
 | `-imagen CARPETA` | Crea (o continúa) una imagen del origen en esa carpeta |
 | `-buscar TEXTO` | Recupera solo lo que coincida (mismas reglas que el buscador) |
+| `-carpeta NOMBRE` | Recupera solo esa carpeta entera, con sus subcarpetas, esté donde esté (`Empresa`, `"Contabilidad 2024"`, `Contab*`, `Documents/Empresa`). Antes de recuperar muestra dónde la encontró y cuánto queda de cada una; con `-solo-listar` solo lo muestra |
 | `-modo todo` | Incluye también archivos de Windows y de programas |
 | `-rapido` | Solo archivos borrados hace poco |
 | `-sin-firmas` / `-solo-firmas` | Solo con nombre / solo por contenido |

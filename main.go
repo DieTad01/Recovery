@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.3"
+const version = "2.4"
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {
@@ -32,6 +32,7 @@ type Config struct {
 	NewScan     bool
 	Exts        map[string]bool
 	Search      string
+	Folder      string
 	ImageDir    string
 	MinKB       int64
 	Interactive bool
@@ -102,6 +103,9 @@ Uso:  recovery -origen <unidad|disco|imagen> -destino <carpeta en OTRA unidad> [
   -si              No pedir confirmaciones
   -consola         Usar la consola de texto en vez de la ventana (Windows)
   -buscar TEXTO    Recuperar solo lo que coincida: nombre o carpeta (tesis), comodines (*.jpg), varios con comas
+  -carpeta NOMBRE  Recuperar solo esa carpeta entera, con sus subcarpetas, esté donde esté:
+                   Empresa  |  "Contabilidad 2024"  |  Contab*  |  Documents/Empresa  (varias con comas).
+                   Con -solo-listar muestra dónde está y cuánto se puede recuperar de ella
   -imagen CARPETA  Crea una imagen del origen en esa carpeta (tolera sectores dañados; si se
                    interrumpe, al repetir la orden continúa). Luego: -origen CARPETA\imagen.img
   -estado-disco    Muestra el estado de salud de los discos y termina
@@ -132,6 +136,7 @@ func main() {
 	flag.BoolVar(&pausa, "pausa", false, "")
 	flag.BoolVar(&consola, "consola", false, "")
 	flag.StringVar(&cfg.Search, "buscar", "", "")
+	flag.StringVar(&cfg.Folder, "carpeta", "", "")
 	flag.StringVar(&cfg.ImageDir, "imagen", "", "")
 	flag.BoolVar(&estadoDisco, "estado-disco", false, "")
 	flag.BoolVar(&programas, "programas", false, "")
@@ -301,6 +306,11 @@ func wizard(cfg *Config) bool {
 	fmt.Println("  [2] Rápida: solo archivos borrados hace poco (unos minutos).")
 	cfg.Quick = ask("Opción [1]: ") == "2"
 	fmt.Println()
+	fmt.Println("¿Buscas una carpeta en concreto (por ejemplo la de la empresa)? Escribe su nombre")
+	fmt.Println("y se recuperará solo esa carpeta, con todo su contenido, esté donde esté.")
+	fmt.Println("Admite comodines (Contab*) y varias separadas por comas. Déjalo vacío para recuperar todo.")
+	cfg.Folder = strings.Trim(ask("Carpeta: "), `"`)
+	fmt.Println()
 	return true
 }
 
@@ -462,9 +472,12 @@ func run(cfg *Config) error {
 	say("Paso 3 de 4: reconstruyendo carpetas y comprobando el estado de los archivos...")
 	s.attachExtensions()
 	s.detectGeometries(say)
-	flt := Filter{Todo: cfg.Todo, Exts: cfg.Exts, Search: ParseSearch(cfg.Search)}
+	flt := Filter{Todo: cfg.Todo, Exts: cfg.Exts, Search: ParseSearch(cfg.Search), Folder: ParseSearch(cfg.Folder)}
 	if flt.Search != nil {
 		say("  Búsqueda: «%s»", flt.Search.Raw)
+	}
+	if flt.Folder != nil {
+		say("  Carpeta buscada: «%s» (con todo su contenido)", flt.Folder.Raw)
 	}
 	plan := &Plan{ByCat: map[string]*catStat{}}
 	if !cfg.OnlyCarve {
@@ -487,6 +500,9 @@ func run(cfg *Config) error {
 			say("     en buen estado: %d%% de los archivos (%s completos, %s dañados en parte)",
 				plan.Intact*100/n, groupDigits(plan.Intact), groupDigits(plan.Partial))
 		}
+	}
+	if flt.Folder != nil {
+		printFolders(plan, flt.Folder)
 	}
 	if plan.NOverw > 0 {
 		say("  Sobrescritos por completo (irrecuperables): %s", groupDigits(plan.NOverw))
@@ -547,7 +563,14 @@ func run(cfg *Config) error {
 			say("AVISO: no cabe todo. Se recuperará hasta llenar el destino; después podrás continuar en otro disco.")
 		}
 	}
-	if len(plan.Items) == 0 && len(s.Cands) == 0 {
+	if len(plan.Items) == 0 && (len(s.Cands) == 0 || flt.Folder != nil) {
+		if flt.Folder != nil {
+			say("No se encontró ninguna carpeta llamada «%s» con archivos que recuperar.", flt.Folder.Raw)
+			say("Prueba con parte del nombre y un asterisco (p. ej. -carpeta \"Conta*\"), o con -buscar y el")
+			say("nombre de un archivo que estaba dentro: si la carpeta perdió su nombre, sus archivos aparecen")
+			say("en «%s\\carpeta_N».", dirLoose)
+			return nil
+		}
 		say("No se encontró ningún archivo que recuperar en esta unidad.")
 		return nil
 	}
@@ -561,7 +584,9 @@ func run(cfg *Config) error {
 	rc.Validate = true
 	t1 := time.Now()
 	rc.RecoverMFT(plan)
-	if flt.Search != nil && !flt.Search.CanMatchCarved() {
+	if flt.Folder != nil {
+		say("  (Los archivos sin nombre, localizados por su contenido, no conservan su carpeta: no se incluyen.)")
+	} else if flt.Search != nil && !flt.Search.CanMatchCarved() {
 		say("  (La búsqueda por nombre no incluye los archivos sin nombre localizados por su contenido.)")
 	} else if !cfg.NoCarve && !rc.Full && !stopRequested() {
 		rc.RecoverCarved()
@@ -732,4 +757,32 @@ func runImage(cfg *Config) error {
 		fmt.Printf("Imagen terminada. Para recuperar desde ella:\n  recovery -origen \"%s\" -destino <carpeta>\n", job.ImgPath)
 	}
 	return nil
+}
+
+// printFolders muestra dónde se encontró la carpeta buscada y cuánto queda de ella.
+func printFolders(plan *Plan, m *Matcher) {
+	fs := PlanFolders(plan, m)
+	if len(fs) == 0 {
+		say("  No aparece ninguna carpeta «%s» (su nombre pudo perderse: ver «%s» con -buscar).", m.Raw, dirLoose)
+		return
+	}
+	say("  Carpetas «%s» encontradas:", m.Raw)
+	for i, f := range fs {
+		if i == 30 {
+			say("     ... y %d más", len(fs)-i)
+			break
+		}
+		say("     %s", f.Path)
+		line := fmt.Sprintf("%s (%s)", plural(int(f.Files), "archivo", "archivos"), humanSize(f.Bytes))
+		if f.Partial > 0 {
+			line += fmt.Sprintf(" · %s dañados en parte", groupDigits(f.Partial))
+		}
+		if f.Lost > 0 {
+			line += fmt.Sprintf(" · %s no recuperables (%s)", groupDigits(f.Lost), humanSize(f.LostBytes))
+		}
+		if !f.Newest.IsZero() {
+			line += " · último cambio " + f.Newest.Local().Format("02/01/2006")
+		}
+		say("         %s", line)
+	}
 }

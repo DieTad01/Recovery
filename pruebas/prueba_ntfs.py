@@ -300,6 +300,15 @@ if "formateo" in which or "reinstalado" in which:
         found = st["exact_path"] + st["exact_loose"] + st["exact_carved"]
         if name == "formateo":
             check(name, found == st["total"], "no se recuperó todo (%d de %d)" % (found, st["total"]))
+            # -carpeta: solo esa carpeta, entera y con su ruta original.
+            out = os.path.join(work, "out_formateo_carpeta")
+            recover(img, out, "-carpeta", "apuntes")
+            got = tree_hashes(os.path.join(out, "Archivos"))
+            want = {k: v for k, v in orig.items() if "/Desktop/Apuntes/" in k and v[1] > 0}
+            check("formateo -carpeta", set(got) == set(want) and all(got[k][0] == want[k][0] for k in want),
+                  "la carpeta no salió entera o salió algo más (%d de %d)" % (len(set(got) & set(want)), len(want)))
+            check("formateo -carpeta", not os.path.isdir(os.path.join(out, "Por_firma")),
+                  "no debe recuperar archivos sin nombre al buscar una carpeta")
         else:
             # Los registros MFT de muchos archivos ya no existen: los de tipo
             # sin firma (txt...) no tienen forma de localizarse; el resto sí.

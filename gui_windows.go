@@ -39,6 +39,8 @@ const (
 	idImgStop
 	idImgAnalyze
 	idNight
+	idSegFiles
+	idSegFolders
 )
 
 // Mensajes propios (los envían los procesos en segundo plano).
@@ -126,6 +128,11 @@ type appState struct {
 	hCanvas, hPrevName, hPrevI           syscall.Handle
 	hHideSys, hSelInfo, hSummary, hRecov syscall.Handle
 	hVerify                              syscall.Handle
+	hSegFiles, hSegFolders               syscall.Handle
+	folderMode                           bool   // el buscador busca carpetas
+	folderQ                              string // última búsqueda de carpetas mostrada
+	rebuilding                           bool   // se está rehaciendo el árbol (no es el usuario)
+	folderCols                           bool   // columnas ordenadas para los resultados de carpetas
 
 	ss       *Session
 	srcName  string
@@ -487,9 +494,18 @@ func layout() {
 	}
 	busy := a.busy != busyNone
 	moveWin(a.hBack, sc(16), sc(16), sc(96), sc(36))
-	moveWin(a.hSrc, sc(126), sc(10), W-sc(126)-sc(340), sc(24))
-	moveWin(a.hStatus, sc(126), sc(36), W-sc(126)-sc(340), sc(20))
-	moveField(a.hwnd, a.hSearch, W-sc(16)-sc(300), sc(16), sc(300), sc(36))
+	// Arriba a la derecha: [Archivos|Carpetas] y el buscador.
+	sw := sc(300)
+	if W < sc(1100) {
+		sw = sc(240)
+	}
+	segW := sc(92)
+	segX := W - sc(16) - sw - sc(10) - 2*segW + lw()
+	moveWin(a.hSegFiles, segX, sc(16), segW, sc(36))
+	moveWin(a.hSegFolders, segX+segW-lw(), sc(16), segW, sc(36))
+	moveWin(a.hSrc, sc(126), sc(10), segX-sc(16)-sc(126), sc(24))
+	moveWin(a.hStatus, sc(126), sc(36), segX-sc(16)-sc(126), sc(20))
+	moveField(a.hwnd, a.hSearch, W-sc(16)-sw, sc(16), sw, sc(36))
 	y0 := sc(72)
 	if busy {
 		moveWin(a.hProgress, sc(16), sc(76), W-sc(32)-sc(130), sc(16))
@@ -511,12 +527,28 @@ func layout() {
 	moveWin(a.hCrumb, lx, y0, lw, sc(22))
 	moveFramed(a.hwnd, a.list.hwnd, lx, y0+sc(26), lw, yb-y0-sc(26)-sc(8))
 	// La columna «Nombre» ocupa lo que queda para que se vean nombre,
-	// tamaño, fecha y estado sin desplazarse.
-	nameW := lw - sc(80+118+140) - sc(28)
-	if nameW < sc(180) {
-		nameW = sc(180)
+	// tamaño, fecha y estado sin desplazarse. En los resultados de «buscar
+	// carpeta» se ven nombre, ubicación y estado (puede haber varias copias).
+	if a.folderCols {
+		avail := lw - sc(140) - sc(28)
+		nameW := avail * 2 / 5
+		if nameW < sc(140) {
+			nameW = sc(140)
+		}
+		locW := avail - nameW
+		if locW < sc(180) {
+			locW = sc(180)
+		}
+		a.list.cols[0].width = nameW * 96 / a.dpi
+		a.list.cols[5].width = locW * 96 / a.dpi
+	} else {
+		nameW := lw - sc(80+118+140) - sc(28)
+		if nameW < sc(180) {
+			nameW = sc(180)
+		}
+		a.list.cols[0].width = nameW * 96 / a.dpi
+		a.list.cols[5].width = 260
 	}
-	a.list.cols[0].width = nameW * 96 / a.dpi
 	a.list.rescale()
 	moveWin(a.hOverlay, lx+sc(20), y0+sc(90), lw-sc(40), sc(60))
 	moveFramed(a.hwnd, a.hCanvas, px, y0, pw, sc(230))
@@ -734,6 +766,10 @@ func onCommand(id, code int) {
 		if code == enChange && !app.selfEdit {
 			pSetTimer.Call(uintptr(app.hwnd), timerSearch, 300, 0)
 		}
+	case idSegFiles:
+		setFolderMode(false)
+	case idSegFolders:
+		setFolderMode(true)
 	case idHideSys:
 		rebuildTree()
 	case idNight:

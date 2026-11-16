@@ -125,6 +125,13 @@ func (l *vlist) selectRow(row int) {
 	sendMsg(l.hwnd, lvmEnsureVisible, uintptr(row), 0)
 }
 
+// selectOnly deja seleccionada solo esa fila (-1: ninguna).
+func (l *vlist) selectOnly(row int) {
+	none := lvitem{stateMask: lvisSelected | lvisFocused}
+	sendMsg(l.hwnd, lvmSetItemState, ^uintptr(0), uintptr(unsafe.Pointer(&none)))
+	l.selectRow(row)
+}
+
 // copyText escribe s en un búfer UTF-16 de Windows.
 func copyText(dst uintptr, max int32, s string) {
 	if dst == 0 || max <= 0 {

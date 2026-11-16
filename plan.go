@@ -33,6 +33,7 @@ type Filter struct {
 	Todo   bool            // incluir también carpetas y archivos de sistema
 	Exts   map[string]bool // nil = todas las extensiones
 	Search *Matcher        // nil = sin búsqueda por nombre
+	Folder *Matcher        // nil = cualquier carpeta; si no, solo lo que está dentro de esas carpetas
 }
 
 type catStat struct {
@@ -271,6 +272,11 @@ func (s *Scan) BuildPlan(flt Filter) *Plan {
 			continue
 		}
 		if flt.Search != nil && !flt.Search.Match(dir, r.Name) {
+			p.NNoMatch++
+			addCovered()
+			continue
+		}
+		if flt.Folder != nil && !flt.Folder.InFolder(dir) {
 			p.NNoMatch++
 			addCovered()
 			continue

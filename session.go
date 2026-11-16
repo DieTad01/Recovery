@@ -513,10 +513,11 @@ type Node struct {
 	Kids     []*Node
 	kid      map[string]*Node
 	Files    []*Entry
-	Count    int   // archivos (recursivo)
-	Size     int64 // tamaño (recursivo)
-	Sel      int   // archivos que se pueden marcar (recursivo)
-	Checked  int   // archivos marcados (recursivo)
+	Count    int       // archivos (recursivo)
+	Size     int64     // tamaño (recursivo)
+	Sel      int       // archivos que se pueden marcar (recursivo)
+	Checked  int       // archivos marcados (recursivo)
+	Newest   time.Time // fecha del archivo más reciente (recursivo)
 	Root     int
 	Handle   uintptr // elemento del TreeView (lo usa la interfaz)
 	Inserted bool    // sus subcarpetas ya están en el TreeView
@@ -582,6 +583,9 @@ func BuildTree(entries []*Entry, hideSystem bool) *Tree {
 		for p := n; p != nil; p = p.Parent {
 			p.Count++
 			p.Size += e.Size
+			if e.MTime.After(p.Newest) {
+				p.Newest = e.MTime
+			}
 			if e.Checkable() {
 				p.Sel++
 				if e.Checked {

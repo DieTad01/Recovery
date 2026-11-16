@@ -271,6 +271,7 @@ const (
 	btnFill         // lleno: la acción principal de cada pantalla
 	btnLink         // texto subrayado, como el menú de la página
 	btnCheck        // casilla
+	btnSeg          // opción de un selector de dos (Archivos | Carpetas): lleno si está elegida
 )
 
 var (
@@ -282,7 +283,7 @@ var (
 func button(text string, style uintptr, id, kind, font int) syscall.Handle {
 	h := ctl("BUTTON", text, style|bsOwnerDraw, 0, id, font)
 	btnKind[h] = kind
-	if kind == btnCheck {
+	if kind == btnCheck || kind == btnSeg {
 		ownerChecks[h] = false
 	}
 	return h
@@ -361,6 +362,29 @@ func drawButton(lp uintptr) {
 			in := rect{r.left + int32(t+sc(3)), r.top + int32(t+sc(3)), r.right - int32(t+sc(3)), r.bottom - int32(t+sc(3))}
 			pSetTextColor.Call(hdc, uintptr(fg))
 			pSetBkColor.Call(hdc, uintptr(map[bool]uint32{true: cStrong, false: cBg}[filled && !disabled]))
+			pDrawFocusRect.Call(hdc, uintptr(unsafe.Pointer(&in)))
+		}
+	case btnSeg:
+		on := ownerChecks[h]
+		fg := cStrong
+		switch {
+		case disabled:
+			frame(hdc, r, t, app.brOff)
+			fg = cOff
+		case on:
+			fillR(hdc, r, app.brStrong)
+			fg = cBg
+		case hot:
+			fillR(hdc, r, app.brPanel)
+			frame(hdc, r, t, app.brStrong)
+		default:
+			frame(hdc, r, t, app.brStrong)
+		}
+		drawText(hdc, text, r, font, fg, center)
+		if focus {
+			in := rect{r.left + int32(t+sc(3)), r.top + int32(t+sc(3)), r.right - int32(t+sc(3)), r.bottom - int32(t+sc(3))}
+			pSetTextColor.Call(hdc, uintptr(fg))
+			pSetBkColor.Call(hdc, uintptr(map[bool]uint32{true: cStrong, false: cBg}[on && !disabled]))
 			pDrawFocusRect.Call(hdc, uintptr(unsafe.Pointer(&in)))
 		}
 	case btnLink:

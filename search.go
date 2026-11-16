@@ -165,3 +165,93 @@ func wildMatch(pat, s string) bool {
 	}
 	return true
 }
+
+// ---------------------------------------------------------------- carpetas
+
+// Puntuación de una carpeta frente a la búsqueda (mayor = más parecida).
+const (
+	fsNone   = iota
+	fsSub    // el nombre contiene el término
+	fsPrefix // el nombre empieza por el término
+	fsWild   // coincide con los comodines, o con el fragmento de ruta
+	fsExact  // el nombre es exactamente el término
+)
+
+// FolderScore compara una carpeta con la búsqueda. rel es su ruta (con
+// «/»), que se usa con los términos que llevan barra; name, su nombre.
+func (m *Matcher) FolderScore(rel, name string) int {
+	n, full := fold(name), fold(rel)
+	best := fsNone
+	for _, p := range m.pats {
+		s := fsNone
+		switch {
+		case p.path && p.wild:
+			if wildMatch(p.s, full) || wildMatch("*/"+p.s, full) {
+				s = fsWild
+			}
+		case p.path:
+			// El fragmento debe terminar en esta carpeta (no en una superior).
+			if i := strings.LastIndex(full, p.s); i >= 0 && !strings.Contains(full[i+len(p.s):], "/") {
+				s = fsSub
+				if i+len(p.s) == len(full) && (i == 0 || full[i-1] == '/') {
+					s = fsWild
+				}
+			}
+		case p.wild:
+			if wildMatch(p.s, n) {
+				s = fsWild
+			}
+		case n == p.s:
+			s = fsExact
+		case strings.HasPrefix(n, p.s):
+			s = fsPrefix
+		case strings.Contains(n, p.s):
+			s = fsSub
+		}
+		if s > best {
+			best = s
+		}
+	}
+	return best
+}
+
+// FolderOf devuelve la carpeta de la ruta dir (la más alta) cuyo nombre es
+// exactamente uno de los términos o coincide con sus comodines, o "" si
+// el archivo no está dentro de ninguna.
+func (m *Matcher) FolderOf(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	comps := strings.Split(dir, "/")
+	for i, c := range comps {
+		if syntheticDir(c) {
+			continue
+		}
+		rel := strings.Join(comps[:i+1], "/")
+		if m.FolderScore(rel, c) >= fsWild {
+			return rel
+		}
+	}
+	return ""
+}
+
+// InFolder indica si un archivo de la carpeta dir está dentro (a cualquier
+// profundidad) de una carpeta buscada.
+func (m *Matcher) InFolder(dir string) bool { return m.FolderOf(dir) != "" }
+
+// syntheticDir indica si el nombre lo puso el programa (la carpeta original
+// ya no tenía nombre): no se compara con la búsqueda.
+func syntheticDir(name string) bool {
+	if name == "sin_nombre" || name == lostPrefix+"bucle" {
+		return true
+	}
+	if !strings.HasPrefix(name, lostPrefix) || len(name) == len(lostPrefix) {
+		return false
+	}
+	for _, r := range name[len(lostPrefix):] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}

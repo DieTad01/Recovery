@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -18,7 +19,13 @@ import (
 type lrow struct {
 	n *Node
 	e *Entry
+	h *FolderHit // resultado de «buscar carpeta»
 }
+
+const (
+	cueFiles   = "Buscar archivos (ej.: tesis, *.jpg)"
+	cueFolders = "Nombre de la carpeta (ej.: Empresa, Contab*)"
+)
 
 func buildExplorer() {
 	a := app
@@ -27,7 +34,11 @@ func buildExplorer() {
 	a.hStatus = ctl("STATIC", "", wsVisible|ssEndEllip, 0, 0, fBody)
 	a.muted[a.hStatus] = true
 	a.hSearch = ctl("EDIT", "", wsVisible|wsTabstop|esAutoHScrol, 0, idSearch, fBody)
-	sendMsg(a.hSearch, emSetCueBanner, 1, uintptr(unsafe.Pointer(wstr("Buscar archivos o carpetas (ej.: tesis, *.jpg)"))))
+	sendMsg(a.hSearch, emSetCueBanner, 1, uintptr(unsafe.Pointer(wstr(cueFiles))))
+	// Qué busca el buscador: archivos (por defecto) o una carpeta concreta.
+	a.hSegFiles = button("Archivos", wsVisible|wsTabstop, idSegFiles, btnSeg, fBold)
+	a.hSegFolders = button("Carpetas", wsVisible|wsTabstop, idSegFolders, btnSeg, fBold)
+	ownerChecks[a.hSegFiles] = true
 	a.hProgress = newBar(wsVisible)
 	a.hStop = button("Detener", wsVisible|wsTabstop, idStop, btnFrame, fBold)
 
@@ -67,7 +78,7 @@ func buildExplorer() {
 	a.hVerify = button("Verificar a fondo…", wsVisible|wsTabstop, idVerify, btnFrame, fBold)
 	a.hRecov = button("Recuperar", wsVisible|wsTabstop, idRecover, btnFill, fButton)
 
-	a.expCtls = []syscall.Handle{a.hBack, a.hSrc, a.hStatus, a.hSearch, a.hProgress, a.hStop, a.hTree,
+	a.expCtls = []syscall.Handle{a.hBack, a.hSrc, a.hStatus, a.hSegFiles, a.hSegFolders, a.hSearch, a.hProgress, a.hStop, a.hTree,
 		a.hCrumb, a.list.hwnd, a.hOverlay, a.hCanvas, a.hPrevName, a.hPrevI, a.hHideSys, a.hSummary, a.hVerify, a.hSelInfo, a.hRecov}
 }
 
@@ -109,6 +120,7 @@ func analyzePath(path, name string) {
 	a.ss = ss
 	a.srcName = name
 	a.tree, a.cur, a.curPath, a.rows, a.search = nil, nil, "", nil, false
+	a.folderQ = ""
 	a.nodes = nil
 	sendMsg(a.hTree, tvmDeleteItem, 0, tviRoot)
 	a.list.setCount(0)
@@ -307,10 +319,15 @@ func rebuildTree() {
 			}
 		}
 	}
+	// Al rehacer el árbol se vuelve a la misma carpeta y, si se estaba
+	// buscando, se repite la búsqueda (no se borra lo que escribió el usuario).
+	wasSearch := a.search
+	a.rebuilding = true
 	if target != nil {
 		selectNode(target)
 	}
-	if a.search {
+	a.rebuilding = false
+	if wasSearch {
 		applySearch()
 	}
 	updateSelInfo()
@@ -382,10 +399,14 @@ func treeNotify(lp uintptr) {
 	case tvnItemExpandingW:
 		insertKids(n)
 	case tvnSelChangedW:
+		if app.rebuilding {
+			return
+		}
 		if n != app.cur || app.search {
 			app.selfEdit = true
 			setText(app.hSearch, "")
 			app.selfEdit = false
+			app.folderQ = ""
 			openNode(n)
 		}
 	}
@@ -395,6 +416,7 @@ func treeNotify(lp uintptr) {
 
 func openNode(n *Node) {
 	a := app
+	setFolderColumns(false)
 	a.cur, a.curPath, a.search = n, n.Path, false
 	a.rows = a.rows[:0]
 	for _, k := range n.Kids {
@@ -417,6 +439,7 @@ func applySearch() {
 	text := strings.TrimSpace(getText(a.hSearch))
 	m := ParseSearch(text)
 	if m == nil {
+		a.folderQ = ""
 		if a.search && a.cur != nil {
 			openNode(a.cur)
 		}
@@ -424,6 +447,11 @@ func applySearch() {
 	}
 	a.search = true
 	a.rows = a.rows[:0]
+	if a.folderMode {
+		applyFolderSearch(text, m)
+		return
+	}
+	setFolderColumns(false)
 	res := a.tree.Search(m)
 	for _, e := range res {
 		a.rows = append(a.rows, lrow{e: e})
@@ -432,6 +460,84 @@ func applySearch() {
 	setText(a.hCrumb, fmt.Sprintf("Resultados de «%s»: %s archivos", text, groupDigits(int64(len(res)))))
 	a.list.setCount(len(a.rows))
 	clearPreview()
+}
+
+// setFolderMode elige qué busca el buscador: archivos o carpetas.
+func setFolderMode(on bool) {
+	a := app
+	a.folderMode = on
+	setChecked(a.hSegFiles, !on)
+	setChecked(a.hSegFolders, on)
+	cue := cueFiles
+	if on {
+		cue = cueFolders
+	}
+	sendMsg(a.hSearch, emSetCueBanner, 1, uintptr(unsafe.Pointer(wstr(cue))))
+	invalidate(a.hSearch)
+	a.folderQ = ""
+	if strings.TrimSpace(getText(a.hSearch)) != "" {
+		applySearch()
+	}
+	pSetFocus.Call(uintptr(a.hSearch))
+}
+
+// setFolderColumns ordena las columnas para los resultados de carpetas:
+// Nombre, Ubicación, Estado, Modificado, Tamaño (o vuelve al orden normal).
+func setFolderColumns(on bool) {
+	a := app
+	if a.folderCols == on {
+		return
+	}
+	a.folderCols = on
+	order := []int32{0, 1, 2, 3, 4, 5}
+	if on {
+		order = []int32{0, 5, 3, 2, 1, 4}
+	}
+	sendMsg(a.list.hwnd, 0x103A, uintptr(len(order)), uintptr(unsafe.Pointer(&order[0]))) // LVM_SETCOLUMNORDERARRAY
+	layout()
+}
+
+// applyFolderSearch muestra las carpetas que coinciden: primero por su
+// nombre y después las que contienen archivos con ese nombre (para las
+// carpetas cuyo nombre se perdió).
+func applyFolderSearch(text string, m *Matcher) {
+	a := app
+	setFolderColumns(true)
+	hits := a.tree.FindFolders(m)
+	named, inside := 0, 0
+	for i := range hits {
+		a.rows = append(a.rows, lrow{n: hits[i].Node, h: &hits[i]})
+		if hits[i].Score > fsNone {
+			named++
+		} else {
+			inside++
+		}
+	}
+	var crumb string
+	switch {
+	case named > 0 && inside > 0:
+		crumb = fmt.Sprintf("%s con «%s» en su nombre · después, %s con archivos así dentro",
+			plural(named, "carpeta", "carpetas"), text, plural(inside, "carpeta", "carpetas"))
+	case named > 0:
+		crumb = fmt.Sprintf("%s con «%s» en su nombre · doble clic para abrir", plural(named, "carpeta", "carpetas"), text)
+	case inside > 0:
+		crumb = fmt.Sprintf("Ninguna carpeta se llama «%s»; %s archivos así dentro (pudo perder su nombre)",
+			text, plural(inside, "carpeta tiene", "carpetas tienen"))
+	default:
+		crumb = fmt.Sprintf("Ninguna carpeta ni archivo se llama «%s». Prueba con parte del nombre o con *", text)
+	}
+	setText(a.hCrumb, crumb)
+	a.list.setCount(len(a.rows))
+	if text != a.folderQ {
+		// Búsqueda nueva: se elige la más probable y se muestran sus datos.
+		// (Si solo se actualizan los resultados durante el análisis, se
+		// respeta la fila que haya elegido el usuario.)
+		a.folderQ = text
+		clearPreview()
+		if len(a.rows) > 0 {
+			a.list.selectOnly(0)
+		}
+	}
 }
 
 func displayDir(e *Entry) string {
@@ -450,19 +556,36 @@ func rowText(row, col int) string {
 		return ""
 	}
 	r := app.rows[row]
-	if r.n != nil {
+	if n := r.n; n != nil {
 		switch col {
 		case 0:
-			return r.n.Name
+			return n.Name
 		case 1:
-			return humanSize(r.n.Size)
+			return humanSize(n.Size)
+		case 2:
+			if !n.Newest.IsZero() {
+				return n.Newest.Local().Format("02/01/2006 15:04")
+			}
 		case 3:
-			return groupDigits(int64(r.n.Count)) + " archivos"
+			switch {
+			case r.h != nil && r.h.Score == fsNone:
+				all := len(n.Files)
+				if r.h.Lost != nil {
+					all += len(r.h.Lost.Files)
+				}
+				return fmt.Sprintf("%s de %s coinciden", groupDigits(int64(r.h.Matches)), groupDigits(int64(all)))
+			case n.Root == rootLost:
+				return groupDigits(int64(n.Count)) + " no recuperables"
+			}
+			return plural(n.Count, "archivo", "archivos")
 		case 4:
 			return "Carpeta"
 		case 5:
-			if r.n.Parent != nil {
-				return strings.ReplaceAll(r.n.Parent.Path, "/", `\`)
+			if r.h != nil {
+				return n.Location()
+			}
+			if n.Parent != nil {
+				return strings.ReplaceAll(n.Parent.Path, "/", `\`)
 			}
 		}
 		return ""
@@ -542,9 +665,33 @@ func toggleRows(rows []int) {
 	updateSelInfo()
 }
 
+// activateRow (doble clic): abre la carpeta; en los resultados de una
+// búsqueda, un archivo abre la carpeta donde está (así se encuentra una
+// carpeta que perdió su nombre a partir de un archivo que tenía dentro).
 func activateRow(row int) {
-	if row < len(app.rows) && app.rows[row].n != nil {
-		selectNode(app.rows[row].n)
+	if row >= len(app.rows) {
+		return
+	}
+	r := app.rows[row]
+	if r.n != nil {
+		selectNode(r.n)
+		return
+	}
+	if !app.search || r.e == nil {
+		return
+	}
+	for _, n := range r.e.nodes {
+		if n.Root == rootTypes {
+			continue
+		}
+		selectNode(n)
+		for i, rr := range app.rows {
+			if rr.e == r.e {
+				app.list.selectOnly(i)
+				break
+			}
+		}
+		return
 	}
 }
 
@@ -567,9 +714,17 @@ func sortRows() {
 		var c int
 		switch {
 		case a.n != nil:
-			if col == 1 {
+			switch col {
+			case 1:
 				c = cmp64(a.n.Size, b.n.Size)
-			} else {
+			case 2:
+				c = cmp64(a.n.Newest.Unix(), b.n.Newest.Unix())
+			case 3:
+				c = a.n.Count - b.n.Count
+			case 5:
+				c = strings.Compare(fold(a.n.Path), fold(b.n.Path))
+			}
+			if c == 0 {
 				c = strings.Compare(fold(a.n.Name), fold(b.n.Name))
 			}
 		case col == 1:
@@ -622,7 +777,7 @@ func showSummary() {
 	if !isChecked(app.hHideSys) {
 		scope = "Todos los archivos (incluidos Windows y programas)"
 	}
-	msgBox(app.hwnd, scope+":\r\n\r\n"+sum.Text(), "Resumen — "+app.srcName, mbIconInfo)
+	msgBox(app.hwnd, app.tree.FoldersText("CARPETAS MARCADAS", 4)+scope+":\r\n\r\n"+sum.Text(), "Resumen — "+app.srcName, mbIconInfo)
 }
 
 // writeSummaryFile guarda resumen.txt junto a lo recuperado.
@@ -630,7 +785,9 @@ func writeSummaryFile(dir string) {
 	if app.tree == nil {
 		return
 	}
-	body := "RESUMEN DE LA RECUPERACIÓN\r\nOrigen: " + app.srcName + "\r\n\r\n" + summarize(app.tree.Entries).Text()
+	body := "RESUMEN DE LA RECUPERACIÓN\r\nOrigen: " + app.srcName + "\r\n\r\n" +
+		app.tree.FoldersText("CARPETAS RECUPERADAS ENTERAS", 50) + "TODO LO ENCONTRADO EN EL DISCO\r\n\r\n" +
+		summarize(app.tree.Entries).Text()
 	os.WriteFile(filepath.Join(dir, "resumen.txt"), []byte("\xEF\xBB\xBF"+body), 0o644)
 }
 
@@ -954,6 +1111,24 @@ func autotestAfterScan() {
 		setText(app.hSearch, q)
 		applySearch()
 	}
+	if q := os.Getenv("RECOVERY_GUI_FOLDER"); q != "" {
+		app.selfEdit = true
+		setText(app.hSearch, q)
+		app.selfEdit = false
+		setFolderMode(true)
+	}
+	if r := os.Getenv("RECOVERY_GUI_CHECKROW"); r != "" {
+		i, _ := strconv.Atoi(r)
+		toggleRows([]int{i})
+	}
+	if r := os.Getenv("RECOVERY_GUI_ACTIVATE"); r != "" { // doble clic en esa fila
+		i, _ := strconv.Atoi(r)
+		activateRow(i)
+	}
+	if r := os.Getenv("RECOVERY_GUI_ROWS_OUT"); r != "" {
+		startPreview()
+		dumpRows(r)
+	}
 	if c := os.Getenv("RECOVERY_GUI_CHECK"); c != "" && app.tree != nil {
 		for _, p := range strings.Split(c, ";") {
 			if n := app.tree.Find(p); n != nil {
@@ -968,6 +1143,21 @@ func autotestAfterScan() {
 		return
 	}
 	autotestFinish()
+}
+
+// dumpRows guarda lo que muestra la lista (para las pruebas automáticas).
+func dumpRows(path string) {
+	var b strings.Builder
+	b.WriteString("crumb\t" + getText(app.hCrumb) + "\n")
+	for i := range app.rows {
+		var cols []string
+		for c := 0; c < 6; c++ {
+			cols = append(cols, rowText(i, c))
+		}
+		fmt.Fprintf(&b, "row\t%d\t%s\n", rowCheck(i), strings.Join(cols, "\t"))
+	}
+	b.WriteString("panel\t" + strings.ReplaceAll(getText(app.hPrevI), "\r\n", " | ") + "\n")
+	os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func autotestAfterVerify() {

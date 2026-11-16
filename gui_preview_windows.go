@@ -117,8 +117,21 @@ func startPreview() {
 	r := a.rows[row]
 	if r.n != nil {
 		setText(a.hPrevName, r.n.Name)
-		setText(a.hPrevI, fmt.Sprintf("Carpeta\r\n%s archivos · %s\r\n\r\nMarca su casilla para recuperar todo su contenido.",
-			groupDigits(int64(r.n.Count)), humanSize(r.n.Size)))
+		if r.n.Root == rootTypes || r.n.Root == rootCarved {
+			setText(a.hPrevI, fmt.Sprintf("Carpeta\r\n%s archivos · %s\r\n\r\nMarca su casilla para recuperar todo su contenido.",
+				groupDigits(int64(r.n.Count)), humanSize(r.n.Size)))
+		} else {
+			var lost *Node
+			if r.h != nil {
+				lost = r.h.Lost
+			}
+			txt := a.tree.FolderReport(r.n, lost)
+			if r.n.Sel > 0 {
+				txt += "\r\n\r\nMarca su casilla para recuperarla entera, con sus subcarpetas. " +
+					"«Verificar a fondo» comprueba lo marcado."
+			}
+			setText(a.hPrevI, txt)
+		}
 		setPreview(previewImage{ext: "/"})
 		return
 	}
