@@ -77,7 +77,11 @@ func buildRepairPage() {
 	}
 	rep.list.onActivate = repOpenRow
 	rep.hSum = ctl("STATIC", "", 0x2000, 0, 0, fBody)
-	rep.hBack = button("‹  Inicio", wsTabstop, idRepBack, btnFrame, fBold)
+	backText := "‹  Inicio"
+	if inMenu() {
+		backText = "‹  Menú"
+	}
+	rep.hBack = button(backText, wsTabstop, idRepBack, btnFrame, fBold)
 	rep.hOpen = button("Abrir resultados", wsTabstop, idRepOpen, btnFrame, fBold)
 	rep.ctls = []syscall.Handle{rep.hTitle, rep.hSub, rep.hL1, rep.hSrc, rep.hSrcBtn, rep.hL2, rep.hIn, rep.hInBtn,
 		rep.hL3, rep.hOut, rep.hOutBtn, rep.hRun, rep.hStop, rep.hProg, rep.hStatus, rep.list.hwnd, rep.hSum,
@@ -199,7 +203,11 @@ func repairCommand(id, code int) {
 		}
 	case idRepBack:
 		if app.busy == busyNone {
-			showPage(pageHome)
+			if inMenu() {
+				menuOpen(idMenuBack)
+			} else {
+				showPage(pageHome)
+			}
 		}
 	}
 }

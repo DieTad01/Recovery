@@ -53,6 +53,24 @@ const (
 	idRepOpen
 	idRepBack
 	idRepList
+	idMenuRecover
+	idMenuRepair
+	idMenuBackup
+	idMenuBack
+	idHomeMenu
+	idBkSrc
+	idBkSrcEdit
+	idBkDest
+	idBkDestEdit
+	idBkTimeEdit
+	idBkDaysEdit
+	idBkCloud
+	idBkRun
+	idBkSchedule
+	idBkStop
+	idBkOpen
+	idBkRemove
+	idBkList
 )
 
 // Mensajes propios (los envían los procesos en segundo plano).
@@ -70,6 +88,8 @@ const (
 	wmAppVerDone
 	wmAppRepProg
 	wmAppRepDone
+	wmAppBkProg
+	wmAppBkDone
 )
 
 const (
@@ -82,6 +102,8 @@ const (
 	pageExplorer
 	pageImage
 	pageRepair
+	pageMenu
+	pageBackup
 )
 
 const (
@@ -91,6 +113,7 @@ const (
 	busyImage
 	busyVerify
 	busyRepair
+	busyBackup
 )
 
 // Fuentes.
@@ -101,6 +124,7 @@ const (
 	fSub
 	fSection
 	fButton
+	fTitle2
 	nFonts
 )
 
@@ -109,7 +133,7 @@ var fontSpec = [nFonts]struct {
 	weight int
 }{
 	fBody: {13, 400}, fBold: {13, 700}, fTitle: {30, 700}, fSub: {15, 400},
-	fSection: {16, 700}, fButton: {15, 700},
+	fSection: {16, 700}, fButton: {15, 700}, fTitle2: {22, 700},
 }
 
 type appState struct {
@@ -132,6 +156,7 @@ type appState struct {
 	hQuick, hHint, hScan syscall.Handle
 	hDisk, hProgs, hVer  syscall.Handle
 	hNight, hRepair      syscall.Handle
+	hHomeMenu            syscall.Handle
 	hMakeImg, hOpenImg   syscall.Handle
 	sources              []Source
 
@@ -288,22 +313,44 @@ func runGUIApp(cfg *Config) int {
 	buildExplorer()
 	buildImagePage()
 	buildRepairPage()
+	buildMenuPage()
+	buildBackupPage()
 	applyTheme()
 	fillDrives()
-	if appMode == "reparar" {
+	first := appMode
+	if startScreen != "" {
+		first = startScreen
+	}
+	switch first {
+	case "recuperar":
+		setText(app.hwnd, "Recovery · Delio")
+		showPage(pageHome)
+	case "reparar":
 		setText(app.hwnd, "Reparador · Delio")
 		showPage(pageRepair)
-	} else {
-		showPage(pageHome)
+	case "respaldo":
+		setText(app.hwnd, "Respaldo · Delio")
+		bkRefresh()
+		showPage(pageBackup)
+	default:
+		setText(app.hwnd, "Herramientas · Delio")
+		updateMenuStatus()
+		showPage(pageMenu)
+	}
+	if inMenu() {
+		setText(app.hwnd, "Herramientas · Delio")
 	}
 	pShowWindow.Call(hw, swShow)
 	pUpdateWindow.Call(hw)
-	if !isAdmin() && !app.autotest && appMode != "reparar" {
+	if !isAdmin() && !app.autotest && app.page == pageHome {
 		msgBox(app.hwnd, "El programa no tiene permisos de administrador, así que no podrá leer las unidades.\n\n"+
 			"Ciérralo, haz clic derecho sobre recovery.exe y elige «Ejecutar como administrador».",
 			"Recovery", mbIconWarning)
 	}
-	if app.autotest && !autotestRepair() {
+	if app.autotest && !autotestRepair() && !autotestBackup() {
+		if app.page == pageMenu && os.Getenv("RECOVERY_GUI_SRC") != "" {
+			showPage(pageHome)
+		}
 		autotestStart()
 	}
 
@@ -356,8 +403,9 @@ func buildHome() {
 	a.hOpenImg = button("Abrir imagen…", wsVisible|wsTabstop, idOpenImage, btnFrame, fBold)
 	a.hNight = button("Noche", wsVisible|wsTabstop, idNight, btnFrame, fBold)
 	a.hRepair = button("Reparar archivos dañados…", wsVisible|wsTabstop, idHomeRepair, btnFrame, fBold)
+	a.hHomeMenu = button("‹  Menú", wsTabstop, idHomeMenu, btnFrame, fBold)
 	a.homeCtls = []syscall.Handle{a.hTitle, a.hSub, a.hSect, a.drives.hwnd, a.hQuick, a.hHint, a.hScan,
-		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg, a.hNight, a.hRepair}
+		a.hDisk, a.hProgs, a.hVer, a.hMakeImg, a.hOpenImg, a.hNight, a.hRepair, a.hHomeMenu}
 }
 
 var sysLarge uintptr
@@ -479,6 +527,12 @@ func showPage(p int) {
 	for _, h := range rep.ctls {
 		show(h, p == pageRepair)
 	}
+	for _, h := range menu.ctls {
+		show(h, p == pageMenu)
+	}
+	for _, h := range bk.ctls {
+		show(h, p == pageBackup)
+	}
 	layout()
 	invalidate(app.hwnd)
 	if p == pageHome {
@@ -509,6 +563,9 @@ func layout() {
 		moveWin(a.hMakeImg, m, H-sc(62), sc(220), sc(40))
 		moveWin(a.hOpenImg, m+sc(232), H-sc(62), sc(160), sc(40))
 		moveWin(a.hRepair, m+sc(404), H-sc(62), sc(240), sc(40))
+		moveWin(a.hHomeMenu, m+sc(404), H-sc(62), sc(120), sc(40))
+		show(a.hRepair, !inMenu())
+		show(a.hHomeMenu, inMenu())
 		moveWin(a.hNight, W-m-sc(96), H-sc(62), sc(96), sc(40))
 		moveWin(a.hVer, W-m-sc(96)-sc(16)-sc(260), H-sc(52), sc(260), sc(20))
 		show(a.hVer, W >= sc(1060))
@@ -522,6 +579,14 @@ func layout() {
 	}
 	if a.page == pageRepair {
 		layoutRepairPage(W, H)
+		return
+	}
+	if a.page == pageMenu {
+		layoutMenuPage(W, H)
+		return
+	}
+	if a.page == pageBackup {
+		layoutBackupPage(W, H)
 		return
 	}
 	busy := a.busy != busyNone
@@ -716,6 +781,12 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 	case wmAppRepDone:
 		repairDone()
 		return 0
+	case wmAppBkProg:
+		backupProgress(int(wp))
+		return 0
+	case wmAppBkDone:
+		backupDone()
+		return 0
 	case wmDpiChanged:
 		app.dpi = int(wp & 0xFFFF)
 		makeFonts()
@@ -738,6 +809,8 @@ func mainProc(hwnd syscall.Handle, msg uint32, wp, lp uintptr) uintptr {
 				what = "la imagen del disco (podrás continuarla después)"
 			case busyRepair:
 				what = "la revisión de archivos"
+			case busyBackup:
+				what = "el respaldo"
 			}
 			if msgBox(hwnd, "Todavía no ha terminado "+what+". ¿Salir de todos modos?", "Recovery",
 				mbYesNo|mbIconQuest|mbDefButton2) != idYes {
@@ -783,7 +856,14 @@ func paintMain(hwnd syscall.Handle) {
 		}
 	case pageImage:
 		fillR(hdc, rect{0, int32(sc(120)), int32(W), int32(sc(120)) + t}, app.brStrong)
-	case pageRepair:
+	case pageMenu:
+		m := sc(32)
+		lh := sc(homeLogoH)
+		drawLogo(hdc, m, sc(22), lh)
+		x := int32(m + logoWidth(lh) + sc(17))
+		fillR(hdc, rect{x, int32(sc(26)), x + t, int32(sc(22) + lh)}, app.brStrong)
+		drawWave(hdc, 0, W, sc(138), sc(18))
+	case pageRepair, pageBackup:
 		m := sc(32)
 		lh := sc(repLogoH)
 		drawLogo(hdc, m, sc(14), lh)
@@ -840,6 +920,14 @@ func onCommand(id, code int) {
 			fillDrives()
 			showPage(pageHome)
 		}
+	case idMenuRecover, idMenuRepair, idMenuBackup, idMenuBack:
+		menuOpen(id)
+	case idHomeMenu:
+		if app.busy == busyNone {
+			menuOpen(idMenuBack)
+		}
+	case idBkSrc, idBkDest, idBkRun, idBkSchedule, idBkStop, idBkOpen, idBkRemove:
+		backupCommand(id, code)
 	case idHomeRepair:
 		if strings.TrimSpace(getText(rep.hSrc)) == "" && app.recDest != "" {
 			setText(rep.hSrc, app.recDest) // lo último que se recuperó

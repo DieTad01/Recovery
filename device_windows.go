@@ -488,7 +488,7 @@ func quoteArg(a string) string {
 
 // relaunchElevated vuelve a lanzar el programa pidiendo permisos de
 // administrador (UAC).
-func relaunchElevated() error {
+func relaunchElevated(extra ...string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -497,6 +497,7 @@ func relaunchElevated() error {
 	for _, a := range os.Args[1:] {
 		args = append(args, quoteArg(a))
 	}
+	args = append(args, extra...)
 	args = append(args, "-pausa")
 	cwd, _ := os.Getwd()
 	r, _, _ := procShellExecuteW.Call(0,

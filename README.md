@@ -1,4 +1,22 @@
-# Recovery 2 — recuperador de archivos con explorador · Delio
+# Herramientas Delio — Recuperar, Reparar y Respaldar
+
+Tres herramientas en un solo programa, con un **menú** para elegir
+(`herramientas.exe`), o cada una por separado:
+
+| Programa | Para qué |
+|----------|----------|
+| `herramientas.exe` | El **menú** con las tres |
+| `recovery.exe` | **Recuperar** archivos borrados, de discos formateados o de equipos restaurados |
+| `reparador.exe` | **Reparar** archivos dañados y buscar copias sanas |
+| `respaldo.exe` | **Respaldo automático** de una carpeta a un disco externo, con versiones |
+
+![El menú](docs/menu.png)
+
+Sin ventanas también hay un menú de texto: `herramientas.exe -consola`.
+
+---
+
+## Recovery — recuperador de archivos con explorador
 
 Programa para **recuperar archivos de un equipo con Windows que fue restaurado,
 formateado o del que se borraron archivos**, con un explorador para **ver lo
@@ -22,7 +40,7 @@ encontrado antes de recuperarlo**, como los programas comerciales:
 - Con la imagen de **Delio** ([delioph.tech](https://delioph.tech)): los
   mismos colores, letra, botones y onda que la página, y un **modo noche**.
 
-Son dos archivos (`recovery.exe` y `reparador.exe`), no se instalan y no necesitan nada más.
+No se instalan y no necesitan nada más.
 
 ![El explorador de resultados](docs/explorador.png)
 
@@ -305,6 +323,52 @@ sirve una copia (por eso conviene indicar respaldos en el paso 2).
 Por línea de órdenes: `reparador.exe -reparar CARPETA [-destino DIR] [-copias-en "D:\Respaldo;E:\"]`
 (o `recovery.exe` con las mismas opciones).
 
+## Respaldo automático
+
+`respaldo.exe` (o **Respaldo automático** en el menú) copia cada día una
+carpeta —la de la empresa, la de OneDrive, Documentos…— a un disco externo, y
+**guarda las versiones anteriores** de lo que cambie o se borre. Así, aunque
+el equipo se restaure, alguien borre la carpeta o un virus cifre los archivos,
+la copia buena sigue en el disco externo.
+
+1. **Carpeta a respaldar** y 2. **dónde guardar el respaldo** (una carpeta en
+   un disco externo; si eliges el mismo disco, avisa).
+3. **Cada día a las** (hora) y cuántos **días se guardan las versiones**
+   anteriores (90 por defecto; 0 = siempre).
+4. **Respaldar ahora** para la primera copia, y **Programar cada día** para que
+   Windows lo repita solo (con el Programador de tareas; si el equipo está
+   apagado a esa hora, se hace al encenderlo). No hace falta dejar el programa
+   abierto ni ser administrador.
+
+![Respaldo automático](docs/respaldo.png)
+
+En el disco externo queda, por cada respaldo:
+
+| Carpeta | Contenido |
+|---------|-----------|
+| `Actual` | La copia al día, tal cual: para restaurar, basta copiar de aquí |
+| `Versiones\<fecha>` | Lo que se cambió o se borró ese día (la versión anterior) |
+| `registro.txt` | Una línea por respaldo: cuántos archivos nuevos, cambiados y borrados |
+
+Detalles:
+
+- Solo copia lo nuevo y lo cambiado, así que después del primero es rápido.
+- Si la carpeta a respaldar aparece **vacía** (se borró entera o no está
+  disponible), no toca el respaldo y lo avisa.
+- Los archivos de OneDrive que están **solo en la nube** no se copian (habría
+  que descargarlos); el programa los cuenta. Para incluirlos, marca la casilla
+  o, mejor, en la carpeta de OneDrive: clic derecho › **Mantener siempre en
+  este dispositivo**.
+- **¿Por qué no basta OneDrive?** OneDrive *sincroniza*: si se borra o se cifra
+  un archivo, el cambio llega también a la nube. Tiene papelera e historial
+  (30 días; 93 en cuentas de empresa), pero lo recomendable es la regla 3-2-1:
+  tres copias, en dos sitios distintos, una fuera de la oficina (OneDrive) y
+  otra en un disco externo que se desconecta.
+- El menú muestra cuándo fue el último respaldo correcto y avisa si hace días
+  que no se hace (por ejemplo, porque el disco no estaba conectado).
+
+Por línea de órdenes: `respaldo.exe -respaldar CARPETA -destino E:\Respaldos [-versiones 90] [-nube]`.
+
 ## Preguntas frecuentes
 
 **¿Por qué aparece un archivo pero sale «dañado» o «no recuperable»?** El nombre
@@ -355,6 +419,9 @@ recovery.exe -programas
 | `-buscar TEXTO` | Recupera solo lo que coincida (mismas reglas que el buscador) |
 | `-reparar CARPETA` | Revisa esa carpeta, repara los dañados y busca copias sanas (resultados en `-destino`, por defecto `CARPETA\Reparados`) |
 | `-copias-en DIRS` | Con `-reparar`: otras carpetas donde buscar copias sanas, separadas por `;` |
+| `-respaldar DIR` | Respalda esa carpeta en `-destino`: copia lo nuevo y lo cambiado, y guarda lo anterior en `Versiones` |
+| `-versiones N` | Con `-respaldar`: días que se guardan las versiones anteriores (90; 0 = siempre) |
+| `-nube` | Con `-respaldar`: incluir los archivos de OneDrive que están solo en la nube |
 | `-carpeta NOMBRE` | Recupera solo esa carpeta entera, con sus subcarpetas, esté donde esté (`Empresa`, `"Contabilidad 2024"`, `Contab*`, `Documents/Empresa`). Antes de recuperar muestra dónde la encontró y cuánto queda de cada una; con `-solo-listar` solo lo muestra |
 | `-modo todo` | Incluye también archivos de Windows y de programas |
 | `-rapido` | Solo archivos borrados hace poco |
@@ -482,13 +549,16 @@ principio de `gui_theme_windows.go`, igual que en `css/base.css` de la página:
 para cambiar el aspecto de todo el programa basta con tocarlos ahí.
 
 ```
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o recovery.exe .
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o herramientas.exe .
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.appMode=recuperar" -o recovery.exe .
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.appMode=reparar" -o reparador.exe .
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.appMode=respaldo" -o respaldo.exe .
 go test ./...
 ```
 
-`reparador.exe` es el mismo programa compilado para abrir directamente el
-Reparador (comparten el motor de comprobación del contenido).
+Los cuatro son el mismo programa: `appMode` decide qué pantalla abre (el menú,
+o directamente una herramienta). Solo «Recuperar» pide permisos de
+administrador (para leer los discos); desde el menú se piden al entrar en él.
 
 Pruebas de extremo a extremo (Linux, como root; requieren `ntfs-3g`, `ffmpeg`,
 ImageMagick, `7z`, `rar` y Pillow):

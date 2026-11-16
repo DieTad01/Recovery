@@ -18,9 +18,19 @@ import (
 
 const version = "2.5"
 
-// appMode se fija al compilar: "reparar" para reparador.exe (abre
-// directamente el Reparador). Ver «Compilar» en el README.
+// appMode se fija al compilar y decide qué abre el programa:
+//
+//	""          menú con las tres herramientas (herramientas.exe)
+//	"recuperar" Recovery directamente (recovery.exe)
+//	"reparar"   el Reparador (reparador.exe)
+//	"respaldo"  el Respaldo automático (respaldo.exe)
+//
+// Ver «Compilar» en el README.
 var appMode = ""
+
+// startScreen es la pantalla inicial pedida con -pantalla (p. ej. al volver
+// a lanzarse con permisos de administrador desde el menú).
+var startScreen = ""
 
 // Config son las opciones elegidas por el usuario.
 type Config struct {
@@ -38,6 +48,9 @@ type Config struct {
 	Search      string
 	Folder      string
 	Repair      string // carpeta a revisar y reparar
+	Backup      string // carpeta a respaldar (con -destino)
+	BackupDays  int    // días que se guardan las versiones anteriores
+	BackupCloud bool   // incluir los archivos de OneDrive que están solo en la nube
 	RepairIn    string // otras carpetas donde buscar copias sanas («;» entre ellas)
 	ImageDir    string
 	MinKB       int64
@@ -117,6 +130,10 @@ Uso:  recovery -origen <unidad|disco|imagen> -destino <carpeta en OTRA unidad> [
   -reparar CARPETA Revisa los archivos de esa carpeta (p. ej. lo ya recuperado), repara los dañados y
                    busca copias sanas. Resultados en -destino (por defecto CARPETA\Reparados)
   -copias-en DIRS  Con -reparar: otras carpetas donde buscar copias sanas, separadas por «;»
+  -respaldar DIR   Respalda esa carpeta en -destino (un disco externo): copia lo nuevo y lo
+                   cambiado y guarda las versiones anteriores y lo borrado en «Versiones»
+  -versiones N     Con -respaldar: días que se guardan las versiones anteriores (90; 0 = siempre)
+  -nube            Con -respaldar: incluir también los archivos de OneDrive que están solo en la nube
   -estado-disco    Muestra el estado de salud de los discos y termina
   -programas       Muestra los programas instalados que más ocupan y termina (Windows)
   -listar          Muestra las unidades disponibles y termina
@@ -148,6 +165,12 @@ func main() {
 	flag.StringVar(&cfg.Folder, "carpeta", "", "")
 	flag.StringVar(&cfg.Repair, "reparar", "", "")
 	flag.StringVar(&cfg.RepairIn, "copias-en", "", "")
+	flag.StringVar(&cfg.Backup, "respaldar", "", "")
+	flag.IntVar(&cfg.BackupDays, "versiones", 90, "")
+	flag.BoolVar(&cfg.BackupCloud, "nube", false, "")
+	scheduled := ""
+	flag.StringVar(&scheduled, "respaldo-programado", "", "")
+	flag.StringVar(&startScreen, "pantalla", "", "")
 	flag.StringVar(&cfg.ImageDir, "imagen", "", "")
 	flag.BoolVar(&estadoDisco, "estado-disco", false, "")
 	flag.BoolVar(&programas, "programas", false, "")
@@ -189,6 +212,18 @@ func main() {
 		os.Exit(code)
 	}
 
+	if scheduled != "" {
+		// Lo lanza el Programador de tareas: sin ventana ni consola.
+		os.Exit(runScheduledBackup(scheduled))
+	}
+	if cfg.Backup != "" {
+		attachConsole()
+		code := runBackupCLI(cfg.Backup, cfg.Out, cfg.BackupDays, cfg.BackupCloud)
+		if pausa {
+			ask("Pulsa Intro para salir...")
+		}
+		os.Exit(code)
+	}
 	if cfg.Repair != "" {
 		attachConsole()
 		code := runRepairCLI(&cfg)
@@ -200,8 +235,11 @@ func main() {
 
 	guiMode := runtime.GOOS == "windows" && !consola && !listar && cfg.Source == ""
 	if guiMode {
-		// La ventana necesita permisos de administrador para leer el disco.
-		if !isAdmin() {
+		// Para leer el disco (Recuperar) hacen falta permisos de administrador;
+		// el menú los pide al entrar en Recuperar, y el Reparador y el
+		// Respaldo no los necesitan.
+		needAdmin := appMode == "recuperar" || startScreen == "recuperar"
+		if needAdmin && !isAdmin() {
 			if err := relaunchElevated(); err == nil {
 				return
 			}
@@ -232,6 +270,21 @@ func main() {
 	} else {
 		if cfg.Interactive {
 			pausa = true
+			switch consoleMenu() {
+			case 1:
+			case 2:
+				code = consoleRepair(&cfg)
+				goto end
+			case 3:
+				code = consoleBackup()
+				goto end
+			case 4:
+				printDiskHealth()
+				goto end
+			default:
+				code = 1
+				goto end
+			}
 			if !wizard(&cfg) {
 				code = 1
 			}
@@ -245,6 +298,7 @@ func main() {
 			}
 		}
 	}
+end:
 	if pausa {
 		fmt.Println()
 		ask("Pulsa Intro para salir...")

@@ -272,6 +272,7 @@ const (
 	btnLink         // texto subrayado, como el menú de la página
 	btnCheck        // casilla
 	btnSeg          // opción de un selector de dos (Archivos | Carpetas): lleno si está elegida
+	btnCard         // tarjeta del menú: título y descripción («Título\nDescripción»)
 )
 
 var (
@@ -362,6 +363,29 @@ func drawButton(lp uintptr) {
 			in := rect{r.left + int32(t+sc(3)), r.top + int32(t+sc(3)), r.right - int32(t+sc(3)), r.bottom - int32(t+sc(3))}
 			pSetTextColor.Call(hdc, uintptr(fg))
 			pSetBkColor.Call(hdc, uintptr(map[bool]uint32{true: cStrong, false: cBg}[filled && !disabled]))
+			pDrawFocusRect.Call(hdc, uintptr(unsafe.Pointer(&in)))
+		}
+	case btnCard:
+		fg, fg2 := cText, cMuted
+		switch {
+		case hot:
+			fillR(hdc, r, app.brStrong)
+			fg, fg2 = cBg, cBg
+		default:
+			frame(hdc, r, t, app.brStrong)
+		}
+		title, desc, _ := strings.Cut(text, "\n")
+		pad := int32(sc(22))
+		tr := rect{r.left + pad, r.top + pad, r.right - pad, r.bottom - pad}
+		drawText(hdc, title, tr, fTitle2, fg, 0x10|0x800) // WORDBREAK|NOPREFIX
+		_, th := textSize(hdc, "Ág", fTitle2)
+		tr.top += int32(th) + int32(sc(12))
+		drawText(hdc, desc, tr, fSub, fg2, 0x10|0x800)
+		fillR(hdc, rect{r.left + pad, r.bottom - pad - int32(sc(4)), r.left + pad + int32(sc(40)), r.bottom - pad}, map[bool]syscall.Handle{true: app.brBg, false: app.brStrong}[hot])
+		if focus {
+			in := rect{r.left + int32(t+sc(4)), r.top + int32(t+sc(4)), r.right - int32(t+sc(4)), r.bottom - int32(t+sc(4))}
+			pSetTextColor.Call(hdc, uintptr(fg))
+			pSetBkColor.Call(hdc, uintptr(map[bool]uint32{true: cStrong, false: cBg}[hot]))
 			pDrawFocusRect.Call(hdc, uintptr(unsafe.Pointer(&in)))
 		}
 	case btnSeg:

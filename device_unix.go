@@ -69,8 +69,10 @@ func listSources() []Source {
 
 func keepAwake() {}
 
-func isAdmin() bool                  { return os.Geteuid() == 0 }
-func relaunchElevated() error        { return fmt.Errorf("ejecuta el programa con sudo") }
+func isAdmin() bool { return os.Geteuid() == 0 }
+func relaunchElevated(extra ...string) error {
+	return fmt.Errorf("ejecuta el programa con sudo")
+}
 func describeDrive(*Device) []string { return nil }
 
 // freeSpace devuelve el espacio libre en la carpeta indicada (-1 si no se sabe).
