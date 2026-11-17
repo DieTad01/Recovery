@@ -1,0 +1,49 @@
+﻿HERRAMIENTAS DELIO 2.5
+Recuperar · Reparar · Respaldar
+delioph.tech
+
+
+POR DÓNDE EMPEZAR
+
+  Abre «herramientas.exe»: es el menú con las tres herramientas.
+  En «Programas por separado» están las mismas tres, sueltas, por si prefieres abrir solo una.
+  Las instrucciones completas, con imágenes, están en «Manual de uso.pdf».
+
+
+QUÉ HAY EN ESTA CARPETA
+
+  herramientas.exe ............. El menú: Recuperar, Reparar y Respaldo automático.
+  Manual de uso.pdf ............ Instrucciones completas.
+  LEEME.txt .................... Este archivo.
+  Programas por separado\
+     recovery.exe .............. Recuperar archivos borrados, de discos formateados o de equipos restaurados.
+     reparador.exe ............. Reparar archivos dañados y buscar copias sanas de ellos.
+     respaldo.exe .............. Respaldo automático de una carpeta a un disco externo, con versiones.
+
+
+ANTES DE RECUPERAR (IMPORTANTE)
+
+  1. Copia esta carpeta a una memoria USB y ábrela desde ahí. NO la copies al disco del que
+     quieres recuperar: cada archivo nuevo puede sobrescribir algo recuperable.
+  2. Guarda lo recuperado en OTRO disco (externo o USB), nunca en el mismo.
+  3. Usa el equipo afectado lo menos posible hasta terminar.
+  4. Si el disco es SSD o NVMe, haz primero una imagen del disco («Crear imagen del disco…»)
+     y trabaja sobre la imagen.
+  5. Recuperar pide permisos de administrador para leer el disco: acepta el aviso de Windows.
+
+
+ORDEN RECOMENDADO EN UN EQUIPO RESTAURADO O FORMATEADO
+
+  1. Recuperar archivos: guarda lo recuperado en un disco externo.
+  2. Reparar archivos dañados: elige la carpeta de lo recuperado y, si los hay, respaldos o
+     memorias USB donde buscar copias sanas.
+  3. Respaldo automático: deja programada la copia diaria de la carpeta de la empresa en un
+     disco externo, para que no vuelva a pasar.
+
+
+NOTAS
+
+  · No se instalan: basta con abrirlos. Como no están firmados, Windows puede mostrar «Windows
+    protegió su PC»: pulsa «Más información» y después «Ejecutar de todas formas».
+  · El respaldo programado se copia a C:\Users\<usuario>\AppData\Local\Delio\Herramientas para
+    seguir funcionando aunque borres esta carpeta.

@@ -14,6 +14,24 @@ Tres herramientas en un solo programa, con un **menú** para elegir
 
 Sin ventanas también hay un menú de texto: `herramientas.exe -consola`.
 
+**Todo lo necesario para usarlas está en la carpeta [`Herramientas Delio`](Herramientas%20Delio/)**,
+lista para copiar a una memoria USB:
+
+```
+Herramientas Delio/
+├── herramientas.exe          ← el menú: empieza por aquí
+├── Manual de uso.pdf         ← este manual, con imágenes
+├── LEEME.txt                 ← qué es cada archivo y por dónde empezar
+└── Programas por separado/
+    ├── recovery.exe          ← Recuperar archivos
+    ├── reparador.exe         ← Reparar archivos dañados
+    └── respaldo.exe          ← Respaldo automático
+```
+
+El resto del repositorio es el código fuente (archivos `.go`), las imágenes
+del manual (`docs/`), el logotipo (`marca/`), las pruebas (`pruebas/`) y lo
+que arma la carpeta (`empaquetar.sh` y `empaquetado/`).
+
 ---
 
 ## Recovery — recuperador de archivos con explorador
@@ -547,6 +565,15 @@ logotipo que se ve en la pantalla de inicio está en `marca/` (sale de los
 logos del repositorio de la página). Los colores de la marca están al
 principio de `gui_theme_windows.go`, igual que en `css/base.css` de la página:
 para cambiar el aspecto de todo el programa basta con tocarlos ahí.
+
+La carpeta `Herramientas Delio` completa (los cuatro programas, el manual en
+PDF y el LEEME) se vuelve a armar con:
+
+```
+./empaquetar.sh
+```
+
+(necesita Go; para el PDF, `pandoc` y Node con Playwright). Por separado:
 
 ```
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o herramientas.exe .
