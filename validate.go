@@ -10,7 +10,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/zlib"
+	"encoding/ascii85"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"hash/crc32"
 	"image/gif"
@@ -335,10 +337,11 @@ func checkPDF(r io.ReaderAt, size int64) (int, string) {
 		if k := bytes.LastIndex(dict, []byte("obj")); k >= 0 {
 			dict = dict[k:]
 		}
-		if !bytes.Contains(dict, []byte("/FlateDecode")) {
+		raw, ok := pdfFlateInput(dict, data[j:j+end])
+		if !ok {
 			continue
 		}
-		zr, err := zlib.NewReader(bytes.NewReader(data[j : j+end]))
+		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err == nil {
 			_, err = io.Copy(io.Discard, zr)
 		}
@@ -821,4 +824,79 @@ func tailPad(r io.ReaderAt, pos, size int64) bool {
 		return false
 	}
 	return allZero(readRange(r, pos, int(size-pos)))
+}
+
+// pdfFilters devuelve, en orden, los filtros de /Filter de un diccionario PDF
+// (un nombre suelto o una lista entre corchetes).
+func pdfFilters(dict []byte) []string {
+	k := bytes.LastIndex(dict, []byte("/Filter"))
+	if k < 0 {
+		return nil
+	}
+	rest := bytes.TrimLeft(dict[k+7:], " \t\r\n")
+	if len(rest) > 0 && rest[0] == '[' {
+		if e := bytes.IndexByte(rest, ']'); e >= 0 {
+			rest = rest[1:e]
+		}
+	} else if len(rest) > 1 && rest[0] == '/' {
+		e := 1
+		for e < len(rest) && !strings.ContainsRune(" \t\r\n/[]<>()", rune(rest[e])) {
+			e++
+		}
+		rest = rest[:e]
+	}
+	var out []string
+	for _, f := range bytes.Fields(bytes.ReplaceAll(rest, []byte("/"), []byte(" /"))) {
+		if len(f) > 1 && f[0] == '/' {
+			out = append(out, string(f[1:]))
+		}
+	}
+	return out
+}
+
+// pdfFlateInput prepara los datos de un bloque comprimido con FlateDecode para comprobarlos:
+// si antes del Flate hay una codificación de texto (ASCII85 o hexadecimal, habitual en PDF
+// generados por programas de facturación), la deshace. ok es false si el bloque no usa Flate
+// o lo combina con otros filtros que no se pueden deshacer aquí.
+func pdfFlateInput(dict, body []byte) (raw []byte, ok bool) {
+	raw = body
+	for _, f := range pdfFilters(dict) {
+		switch f {
+		case "FlateDecode", "Fl":
+			return raw, true
+		case "ASCII85Decode", "A85":
+			r := bytes.TrimSpace(raw)
+			r = bytes.TrimPrefix(r, []byte("<~"))
+			if e := bytes.Index(r, []byte("~>")); e >= 0 {
+				r = r[:e]
+			}
+			dst := make([]byte, 4*len(r)/5+4)
+			n, _, err := ascii85.Decode(dst, r, true)
+			if err != nil {
+				return nil, false
+			}
+			raw = dst[:n]
+		case "ASCIIHexDecode", "AHx":
+			var h []byte
+			for _, c := range raw {
+				if c == '>' {
+					break
+				}
+				if c > ' ' {
+					h = append(h, c)
+				}
+			}
+			if len(h)%2 == 1 {
+				h = append(h, '0')
+			}
+			d := make([]byte, len(h)/2)
+			if _, err := hex.Decode(d, h); err != nil {
+				return nil, false
+			}
+			raw = d
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
 }
